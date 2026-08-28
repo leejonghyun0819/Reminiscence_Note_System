@@ -1,0 +1,58 @@
+{
+  "id": "album_1787896677382",
+  "fileNames": [
+    "image_0.jpg",
+    "image_1.jpg",
+    "image_2.jpg",
+    "image_3.jpg",
+    "image_4.jpg",
+    "image_5.jpg",
+    "image_6.jpg",
+    "image_7.jpg",
+    "image_9.jpg",
+    "image_10.jpg",
+    "image_11.jpg",
+    "image_12.jpg",
+    "image_13.jpg",
+    "image_14.jpg"
+  ],
+  "imageUrls": [
+    "http://localhost:8000/albums/승우 여행사진/album_1787896677382/image_0.jpg",
+    "http://localhost:8000/albums/승우 여행사진/album_1787896677382/image_1.jpg",
+    "http://localhost:8000/albums/승우 여행사진/album_1787896677382/image_2.jpg",
+    "http://localhost:8000/albums/승우 여행사진/album_1787896677382/image_3.jpg",
+    "http://localhost:8000/albums/승우 여행사진/album_1787896677382/image_4.jpg",
+    "http://localhost:8000/albums/승우 여행사진/album_1787896677382/image_5.jpg",
+    "http://localhost:8000/albums/승우 여행사진/album_1787896677382/image_6.jpg",
+    "http://localhost:8000/albums/승우 여행사진/album_1787896677382/image_7.jpg",
+    "http://localhost:8000/albums/승우 여행사진/album_1787896677382/image_9.jpg",
+    "http://localhost:8000/albums/승우 여행사진/album_1787896677382/image_10.jpg",
+    "http://localhost:8000/albums/승우 여행사진/album_1787896677382/image_11.jpg",
+    "http://localhost:8000/albums/승우 여행사진/album_1787896677382/image_12.jpg",
+    "http://localhost:8000/albums/승우 여행사진/album_1787896677382/image_13.jpg",
+    "http://localhost:8000/albums/승우 여행사진/album_1787896677382/image_14.jpg"
+  ],
+  "audioFileName": null,
+  "audioUrl": null,
+  "categoryFolder": "승우 여행사진",
+  "analysis": {
+    "title": "치앙마이의 뜨거운 청춘 기록",
+    "location": "태국 치앙마이",
+    "yearEstimate": "2024년 여름",
+    "description": "치앙마이 국제 축구 대회에 참가한 청년들이 경기장 위에서 열정을 태우며 태극기를 들고 단합하는 모습입니다. 경기가 끝난 뒤에는 고요한 강변과 싱그러운 공원, 감성적인 카페를 거닐며 여유로운 휴식을 즐겼습니다. 비행기 탑승부터 현지에서의 소소한 일상까지 함께하며 한데 어우러진 특별한 여행입니다.",
+    "storyCaption": "낯선 타국의 잔디밭 위에서 하나의 목표를 향해 달렸던 그날의 열기는 가슴속에 여전히 뜨겁게 남아있습니다. 경기가 끝난 뒤 맞이한 치앙마이의 은은한 노을과 푸른 자연은 지친 몸과 마음을 다정하게 다독여주었습니다. 시원한 음료 한 잔을 나누며 서로에게 건넨 웃음 속에 서로를 향한 끈끈한 우정이 더욱 깊어졌습니다. 푸른 하늘 아래 흐른 땀방울과 웃음소리가 모여 청춘의 소중한 한 페이지를 선명하게 채워주었습니다.",
+    "audioTranscriptSummary": ""
+  },
+  "history": [
+    {
+      "version": 1,
+      "timestamp": 1787896677962,
+      "title": "치앙마이의 뜨거운 청춘 기록",
+      "location": "태국 치앙마이",
+      "yearEstimate": "2024년 여름",
+      "description": "치앙마이 국제 축구 대회에 참가한 청년들이 경기장 위에서 열정을 태우며 태극기를 들고 단합하는 모습입니다. 경기가 끝난 뒤에는 고요한 강변과 싱그러운 공원, 감성적인 카페를 거닐며 여유로운 휴식을 즐겼습니다. 비행기 탑승부터 현지에서의 소소한 일상까지 함께하며 한데 어우러진 특별한 여행입니다.",
+      "storyCaption": "낯선 타국의 잔디밭 위에서 하나의 목표를 향해 달렸던 그날의 열기는 가슴속에 여전히 뜨겁게 남아있습니다. 경기가 끝난 뒤 맞이한 치앙마이의 은은한 노을과 푸른 자연은 지친 몸과 마음을 다정하게 다독여주었습니다. 시원한 음료 한 잔을 나누며 서로에게 건넨 웃음 속에 서로를 향한 끈끈한 우정이 더욱 깊어졌습니다. 푸른 하늘 아래 흐른 땀방울과 웃음소리가 모여 청춘의 소중한 한 페이지를 선명하게 채워주었습니다."
+    }
+  ],
+  "createdAt": 1787896677952
+}

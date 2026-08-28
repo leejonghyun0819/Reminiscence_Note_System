@@ -1,176 +1,76 @@
-// frontend/features/GalleryViewerModal.tsx
-import React, { useState, useEffect } from 'react';
-import { Modal, View, Text, TouchableOpacity, ScrollView, Image, StyleSheet, Platform } from 'react-native';
-import { MemoryItem } from '../../context/MemoryContext';
-import { MouseDragHorizontalScroll } from '../backup/MouseDragHorizontalScroll';
-import { isVideoUrl } from '../../utils/mediaProcessUtils';
+// frontend/features/index/GalleryViewerModal.tsx
+import React from 'react';
+import { Modal, View, Text, Image, TouchableOpacity, ScrollView, StyleSheet, Alert } from 'react-native';
+import { MemoryItem, useMemory } from '../../context/MemoryContext';
 
 interface GalleryViewerModalProps {
-    item: MemoryItem | null;
-    initialIdx?: number;
+    visible: boolean;
+    album: MemoryItem | null;
     onClose: () => void;
 }
 
-export const GalleryViewerModal: React.FC<GalleryViewerModalProps> = ({ item, initialIdx = 0, onClose }) => {
-    const [activePhotoIdx, setActivePhotoIdx] = useState<number>(initialIdx);
+export const GalleryViewerModal: React.FC<GalleryViewerModalProps> = ({ visible, album, onClose }) => {
+    const { deleteSingleImage } = useMemory();
 
-    useEffect(() => {
-        setActivePhotoIdx(initialIdx);
-    }, [initialIdx, item]);
+    if (!album) return null;
 
-    useEffect(() => {
-        if (Platform.OS !== 'web' || !item) return;
+    const handleDeletePhoto = (targetUrl: string, index: number) => {
+        if (album.imageUrls.length <= 1) {
+            alert('⚠️ 앨범에는 최소 1장 이상의 사진이 남아있어야 합니다.');
+            return;
+        }
 
-        const handleKeyDown = (e: KeyboardEvent) => {
-            const total = item.imageUrls.length;
-            if (e.key === 'ArrowRight') {
-                e.preventDefault();
-                setActivePhotoIdx((prev) => (prev + 1 < total ? prev + 1 : 0));
-            } else if (e.key === 'ArrowLeft') {
-                e.preventDefault();
-                setActivePhotoIdx((prev) => (prev - 1 >= 0 ? prev - 1 : total - 1));
-            } else if (e.key === 'Escape') {
-                onClose();
-            }
-        };
+        const confirmed = window.confirm ? window.confirm(`${index + 1}번째 사진을 앨범에서 삭제하시겠습니까?`) : true;
 
-        window.addEventListener('keydown', handleKeyDown);
-        return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [item, onClose]);
-
-    if (!item) return null;
+        if (confirmed) {
+            deleteSingleImage(album.id, targetUrl)
+                .then((success) => {
+                    if (success) {
+                        alert('사진이 삭제되었습니다.');
+                    } else {
+                        alert('사진 삭제에 실패했습니다.');
+                    }
+                })
+                .catch((e) => {
+                    alert(`삭제 중 오류 발생: ${e.message}`);
+                });
+        }
+    };
 
     return (
-        <Modal visible={item !== null} animationType="fade" transparent onRequestClose={onClose}>
+        <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
             <View style={styles.modalOverlay}>
                 <View style={styles.modalContainer}>
                     <View style={styles.modalHeader}>
                         <View>
-                            <Text style={styles.modalHeaderTitle}>
-                                {`🖼️ 앨범 전체 미디어 갤러리 (${item.imageUrls.length}개)`}
+                            <Text style={styles.modalTitle}>
+                                {`🖼️ ${album.analysis?.title || '앨범'} 미디어 갤러리`}
                             </Text>
-                            <Text style={styles.modalHeaderSub}>
-                                동영상은 컨트롤러를 눌러 시청할 수 있으며, 방향키(←, →)로 다음 미디어로 이동할 수
-                                있습니다.
+                            <Text style={styles.modalSubTitle}>
+                                {`총 ${album.imageUrls?.length || 0}개의 미디어가 등록되어 있습니다.`}
                             </Text>
                         </View>
-                        <TouchableOpacity style={styles.modalCloseBtn} onPress={onClose}>
-                            <Text style={styles.modalCloseBtnText}>✕</Text>
+                        <TouchableOpacity style={styles.closeBtn} onPress={onClose}>
+                            <Text style={styles.closeBtnText}>✕</Text>
                         </TouchableOpacity>
                     </View>
 
-                    <ScrollView style={styles.modalBody} contentContainerStyle={{ padding: 24, gap: 16 }}>
-                        <View style={styles.galleryMainBox}>
-                            <TouchableOpacity
-                                style={[styles.navArrowBtn, styles.navArrowBtnLeft]}
-                                onPress={() =>
-                                    setActivePhotoIdx((prev) => (prev - 1 >= 0 ? prev - 1 : item.imageUrls.length - 1))
-                                }
-                            >
-                                <Text style={styles.navArrowText}>‹</Text>
-                            </TouchableOpacity>
-
-                            {isVideoUrl(item.imageUrls[activePhotoIdx]) && Platform.OS === 'web' ? (
-                                <div
-                                    style={{
-                                        width: '100%',
-                                        height: 380,
-                                        display: 'flex',
-                                        justifyContent: 'center',
-                                        alignItems: 'center',
-                                    }}
-                                >
-                                    <video
-                                        key={item.imageUrls[activePhotoIdx]}
-                                        src={item.imageUrls[activePhotoIdx]}
-                                        controls
-                                        autoPlay
-                                        playsInline
-                                        style={{
-                                            width: '100%',
-                                            maxHeight: 380,
-                                            borderRadius: 8,
-                                            backgroundColor: '#000',
-                                        }}
-                                    />
-                                </div>
-                            ) : (
-                                <Image
-                                    source={{ uri: item.imageUrls[activePhotoIdx] }}
-                                    style={styles.galleryMainLargeImg}
-                                    resizeMode="contain"
-                                />
-                            )}
-
-                            <TouchableOpacity
-                                style={[styles.navArrowBtn, styles.navArrowBtnRight]}
-                                onPress={() =>
-                                    setActivePhotoIdx((prev) => (prev + 1 < item.imageUrls.length ? prev + 1 : 0))
-                                }
-                            >
-                                <Text style={styles.navArrowText}>›</Text>
-                            </TouchableOpacity>
-
-                            <Text style={styles.galleryIndexIndicator}>
-                                {`${isVideoUrl(item.imageUrls[activePhotoIdx]) ? '🎬 동영상 ' : '🖼️ 사진 '} ${activePhotoIdx + 1} / ${item.imageUrls.length}`}
-                            </Text>
-                        </View>
-
-                        <Text style={styles.formLabel}>전체 미디어 목록 (클릭하여 열람 및 재생)</Text>
-                        <MouseDragHorizontalScroll contentContainerStyle={styles.galleryAllThumbsRow}>
-                            {item.imageUrls.map((url, gIdx) => {
-                                const isVid = isVideoUrl(url);
-                                return (
+                    <ScrollView contentContainerStyle={styles.galleryGrid}>
+                        {album.imageUrls?.map((url, idx) => (
+                            <View key={idx} style={styles.mediaCard}>
+                                <View style={styles.imageWrapper}>
+                                    <Image source={{ uri: url }} style={styles.galleryImage} resizeMode="cover" />
                                     <TouchableOpacity
-                                        key={gIdx}
-                                        onPress={() => setActivePhotoIdx(gIdx)}
-                                        style={[
-                                            styles.galleryThumbItem,
-                                            activePhotoIdx === gIdx && styles.galleryThumbItemActive,
-                                        ]}
+                                        style={styles.deletePhotoBtn}
+                                        onPress={() => handleDeletePhoto(url, idx)}
                                     >
-                                        {isVid && Platform.OS === 'web' ? (
-                                            <div
-                                                style={{
-                                                    width: '100%',
-                                                    height: '100%',
-                                                    position: 'relative',
-                                                    backgroundColor: '#000',
-                                                }}
-                                            >
-                                                <video
-                                                    src={url}
-                                                    style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                                                    muted
-                                                />
-                                                <div
-                                                    style={{
-                                                        position: 'absolute',
-                                                        inset: 0,
-                                                        display: 'flex',
-                                                        alignItems: 'center',
-                                                        justifyContent: 'center',
-                                                        backgroundColor: 'rgba(0,0,0,0.3)',
-                                                    }}
-                                                >
-                                                    <span style={{ fontSize: 16 }}>🎬</span>
-                                                </div>
-                                            </div>
-                                        ) : (
-                                            <Image source={{ uri: url }} style={styles.galleryThumbImg} />
-                                        )}
-                                        <Text style={styles.galleryThumbNumber}>{`${gIdx + 1}`}</Text>
+                                        <Text style={styles.deletePhotoBtnText}>🗑️ 삭제</Text>
                                     </TouchableOpacity>
-                                );
-                            })}
-                        </MouseDragHorizontalScroll>
+                                </View>
+                                <Text style={styles.mediaIndexText}>{`${idx + 1}번째 사진`}</Text>
+                            </View>
+                        ))}
                     </ScrollView>
-
-                    <View style={styles.modalFooter}>
-                        <TouchableOpacity style={styles.modalCancelBtn} onPress={onClose}>
-                            <Text style={styles.modalCancelBtnText}>닫기</Text>
-                        </TouchableOpacity>
-                    </View>
                 </View>
             </View>
         </Modal>
@@ -180,110 +80,82 @@ export const GalleryViewerModal: React.FC<GalleryViewerModalProps> = ({ item, in
 const styles = StyleSheet.create({
     modalOverlay: {
         flex: 1,
-        backgroundColor: 'rgba(0,0,0,0.65)',
+        backgroundColor: 'rgba(15, 23, 42, 0.65)',
         justifyContent: 'center',
         alignItems: 'center',
         padding: 20,
     },
     modalContainer: {
         width: '100%',
-        maxWidth: 980,
-        maxHeight: '92%',
+        maxWidth: 900,
+        maxHeight: '85%',
         backgroundColor: '#FFFFFF',
         borderRadius: 16,
-        overflow: 'hidden',
+        padding: 24,
+        shadowColor: '#000',
+        shadowOpacity: 0.15,
+        shadowRadius: 16,
+        shadowOffset: { width: 0, height: 8 },
     },
     modalHeader: {
         flexDirection: 'row',
         justifyContent: 'space-between',
         alignItems: 'center',
-        paddingHorizontal: 24,
-        paddingVertical: 16,
+        marginBottom: 20,
         borderBottomWidth: 1,
-        borderBottomColor: '#E4E4E7',
-        backgroundColor: '#FAF5EE',
+        borderColor: '#E2E8F0',
+        paddingBottom: 14,
     },
-    modalHeaderTitle: { fontSize: 18, fontWeight: '800', color: '#2C231B' },
-    modalHeaderSub: { fontSize: 12, color: '#786A5E', marginTop: 2 },
-    modalCloseBtn: { padding: 6 },
-    modalCloseBtnText: { fontSize: 18, color: '#71717A', fontWeight: '700' },
-    modalBody: { flex: 1 },
-    galleryMainBox: {
-        alignItems: 'center',
-        justifyContent: 'center',
-        position: 'relative',
-        backgroundColor: '#18181B',
-        borderRadius: 12,
-        overflow: 'hidden',
-        padding: 10,
-        minHeight: 380,
-    },
-    galleryMainLargeImg: { width: '100%', height: 380 },
-    navArrowBtn: {
-        position: 'absolute',
-        top: '50%',
-        marginTop: -22,
-        width: 44,
-        height: 44,
-        borderRadius: 22,
-        backgroundColor: 'rgba(0,0,0,0.55)',
+    modalTitle: { fontSize: 18, fontWeight: '800', color: '#0F172A' },
+    modalSubTitle: { fontSize: 13, color: '#64748B', marginTop: 2 },
+    closeBtn: {
+        width: 32,
+        height: 32,
+        borderRadius: 16,
+        backgroundColor: '#F1F5F9',
         justifyContent: 'center',
         alignItems: 'center',
-        zIndex: 20,
     },
-    navArrowBtnLeft: { left: 14 },
-    navArrowBtnRight: { right: 14 },
-    navArrowText: { color: '#FFFFFF', fontSize: 28, fontWeight: '300', lineHeight: 30 },
-    galleryIndexIndicator: {
-        position: 'absolute',
-        bottom: 12,
-        right: 14,
-        backgroundColor: 'rgba(0,0,0,0.7)',
-        color: '#FFFFFF',
-        paddingHorizontal: 10,
-        paddingVertical: 4,
-        borderRadius: 12,
-        fontSize: 12,
-        fontWeight: '700',
-    },
-    formLabel: { fontSize: 13, fontWeight: '700', color: '#3F3F46', marginBottom: -6 },
-    galleryAllThumbsRow: { flexDirection: 'row', gap: 8, paddingVertical: 6 },
-    galleryThumbItem: {
-        position: 'relative',
-        width: 80,
-        height: 60,
-        borderRadius: 8,
-        overflow: 'hidden',
-        borderWidth: 2,
-        borderColor: '#E4E4E7',
-    },
-    galleryThumbItemActive: { borderColor: '#F5933C' },
-    galleryThumbImg: { width: '100%', height: '100%' },
-    galleryThumbNumber: {
-        position: 'absolute',
-        bottom: 2,
-        left: 2,
-        backgroundColor: 'rgba(0,0,0,0.65)',
-        color: '#FFFFFF',
-        fontSize: 10,
-        paddingHorizontal: 4,
-        borderRadius: 3,
-        fontWeight: '700',
-    },
-    modalFooter: {
+    closeBtnText: { fontSize: 14, color: '#475569', fontWeight: '800' },
+    galleryGrid: {
         flexDirection: 'row',
-        justifyContent: 'flex-end',
-        paddingHorizontal: 24,
-        paddingVertical: 14,
-        borderTopWidth: 1,
-        borderTopColor: '#E4E4E7',
-        backgroundColor: '#FFFFFF',
-    },
-    modalCancelBtn: {
+        flexWrap: 'wrap',
+        gap: 16,
+        justifyContent: 'flex-start',
         paddingVertical: 10,
-        paddingHorizontal: 16,
-        borderRadius: 8,
-        backgroundColor: '#F4F4F5',
     },
-    modalCancelBtnText: { color: '#52525B', fontSize: 13, fontWeight: '700' },
+    mediaCard: {
+        width: '30%',
+        minWidth: 220,
+        backgroundColor: '#F8FAFC',
+        borderRadius: 12,
+        borderWidth: 1,
+        borderColor: '#E2E8F0',
+        overflow: 'hidden',
+        paddingBottom: 8,
+    },
+    imageWrapper: {
+        width: '100%',
+        height: 180,
+        position: 'relative',
+        backgroundColor: '#0F172A',
+    },
+    galleryImage: { width: '100%', height: '100%' },
+    deletePhotoBtn: {
+        position: 'absolute',
+        top: 8,
+        right: 8,
+        backgroundColor: 'rgba(239, 68, 68, 0.9)',
+        paddingHorizontal: 8,
+        paddingVertical: 4,
+        borderRadius: 6,
+    },
+    deletePhotoBtnText: { color: '#FFFFFF', fontSize: 11, fontWeight: '700' },
+    mediaIndexText: {
+        fontSize: 12,
+        fontWeight: '600',
+        color: '#64748B',
+        textAlign: 'center',
+        marginTop: 8,
+    },
 });

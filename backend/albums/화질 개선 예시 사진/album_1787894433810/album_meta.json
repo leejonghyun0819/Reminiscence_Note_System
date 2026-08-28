@@ -1,0 +1,38 @@
+{
+  "id": "album_1787894433810",
+  "fileNames": [
+    "image_0.jpg",
+    "image_1.jpg",
+    "restored_album_1787894433810_1787894836412_colorized_1787894847720.jpg",
+    "restored_album_1787894433810_1787894836412_enhanced_1787895195031.jpg"
+  ],
+  "imageUrls": [
+    "http://localhost:8000/albums/화질 개선 예시 사진/album_1787894433810/image_0.jpg",
+    "http://localhost:8000/albums/화질 개선 예시 사진/album_1787894433810/image_1.jpg",
+    "http://localhost:8000/albums/화질 개선 예시 사진/album_1787894433810/restored_album_1787894433810_1787894836412_colorized_1787894847720.jpg",
+    "http://localhost:8000/albums/화질 개선 예시 사진/album_1787894433810/restored_album_1787894433810_1787894836412_enhanced_1787895195031.jpg"
+  ],
+  "audioFileName": null,
+  "audioUrl": null,
+  "categoryFolder": "화질 개선 예시 사진",
+  "analysis": {
+    "title": "햇살 가득한 둑길의 웃음꽃",
+    "location": "시골 마을 둑길",
+    "yearEstimate": "1970년대 늦봄",
+    "description": "흑백 사진 속 세 명의 어린 소녀들이 햇살이 내리쬐는 둑길 옆 잔디밭에 모여앉아 맑게 웃고 있습니다. 작은 바구니와 그릇을 앞에 두고 함께 어울리며 동심 가득한 시간을 나누는 모습입니다.",
+    "storyCaption": "따스한 볕이 내리쬐는 시골 둑길 위, 소녀들의 자지러지는 웃음소리가 들판 너머로 퍼져나갑니다. 소소한 이야기 하나에도 세상을 다 가진 듯 입을 가리고 환하게 웃던 순수한 시절의 순간입니다. 흙냄새와 풀내음 속에서 함께했던 그날의 풋풋하고 다정한 온기가 사진 너머까지 아련하게 전해집니다.",
+    "audioTranscriptSummary": ""
+  },
+  "history": [
+    {
+      "version": 1,
+      "timestamp": 1787894434110,
+      "title": "햇살 가득한 둑길의 웃음꽃",
+      "location": "시골 마을 둑길",
+      "yearEstimate": "1970년대 늦봄",
+      "description": "흑백 사진 속 세 명의 어린 소녀들이 햇살이 내리쬐는 둑길 옆 잔디밭에 모여앉아 맑게 웃고 있습니다. 작은 바구니와 그릇을 앞에 두고 함께 어울리며 동심 가득한 시간을 나누는 모습입니다.",
+      "storyCaption": "따스한 볕이 내리쬐는 시골 둑길 위, 소녀들의 자지러지는 웃음소리가 들판 너머로 퍼져나갑니다. 소소한 이야기 하나에도 세상을 다 가진 듯 입을 가리고 환하게 웃던 순수한 시절의 순간입니다. 흙냄새와 풀내음 속에서 함께했던 그날의 풋풋하고 다정한 온기가 사진 너머까지 아련하게 전해집니다."
+    }
+  ],
+  "createdAt": 1787894434100
+}

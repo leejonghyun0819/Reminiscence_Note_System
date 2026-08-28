@@ -5,6 +5,7 @@ import { View, Text, Image, TouchableOpacity, StyleSheet } from 'react-native';
 interface EnhanceCompareViewerProps {
     currentImageUrl: string;
     enhancedResultUrl: string;
+    mode?: 'enhance' | 'colorize';
     onKeepOriginal: () => void;
     onApplyEnhanced: () => void;
     onKeepBoth: () => void;
@@ -13,21 +14,27 @@ interface EnhanceCompareViewerProps {
 export const EnhanceCompareViewer: React.FC<EnhanceCompareViewerProps> = ({
     currentImageUrl,
     enhancedResultUrl,
+    mode = 'enhance',
     onKeepOriginal,
     onApplyEnhanced,
     onKeepBoth,
 }) => {
+    const isColorize = mode === 'colorize';
+
     return (
         <View style={styles.compareContainer}>
-            <Text style={styles.compareNotice}>
-                🔍 YouCam AI 개선이 완료되었습니다! 원본 교체 또는 두 장 모두 보관 중 원하는 방식을 선택하세요.
+            <Text style={[styles.compareNotice, isColorize && styles.compareNoticeColorize]}>
+                {isColorize
+                    ? '🎨 YouCam AI 흑백 컬러 복원이 완료되었습니다! 교체 또는 두 장 모두 보관 중 선택하세요.'
+                    : '🔍 YouCam AI 초고화질 개선이 완료되었습니다! 교체 또는 두 장 모두 보관 중 선택하세요.'}
             </Text>
 
             <View style={styles.compareRow}>
-                {/* 좌: 현재 원본 사진 */}
                 <View style={styles.compareCol}>
                     <View style={styles.compareHeader}>
-                        <Text style={styles.compareTagOriginal}>📷 현재 원본 사진</Text>
+                        <Text style={styles.compareTagOriginal}>
+                            {isColorize ? '📷 원본 흑백 사진' : '📷 현재 원본 사진'}
+                        </Text>
                     </View>
                     <View style={styles.imagePreviewBox}>
                         <Image source={{ uri: currentImageUrl }} style={styles.previewImg} resizeMode="contain" />
@@ -37,21 +44,27 @@ export const EnhanceCompareViewer: React.FC<EnhanceCompareViewerProps> = ({
                     </TouchableOpacity>
                 </View>
 
-                {/* 우: 새로 생성된 YouCam AI 개선본 */}
                 <View style={styles.compareCol}>
                     <View style={styles.compareHeader}>
-                        <Text style={styles.compareTagEnhanced}>✨ YouCam AI 개선본</Text>
+                        <Text style={[styles.compareTagEnhanced, isColorize && styles.compareTagColorize]}>
+                            {isColorize ? '🎨 YouCam AI 컬러 복원본' : '✨ YouCam AI 화질 개선본'}
+                        </Text>
                     </View>
                     <View style={styles.imagePreviewBox}>
                         <Image source={{ uri: enhancedResultUrl }} style={styles.previewImg} resizeMode="contain" />
                     </View>
                     <View style={styles.enhancedActionCol}>
-                        <TouchableOpacity style={styles.chooseEnhancedBtn} onPress={onApplyEnhanced}>
-                            <Text style={styles.chooseEnhancedBtnText}>✨ 개선본으로 교체하기</Text>
+                        <TouchableOpacity
+                            style={[styles.chooseEnhancedBtn, isColorize && styles.chooseColorizeBtn]}
+                            onPress={onApplyEnhanced}
+                        >
+                            <Text style={styles.chooseEnhancedBtnText}>
+                                {isColorize ? '🎨 컬러 복원본으로 교체하기' : '✨ 개선본으로 교체하기'}
+                            </Text>
                         </TouchableOpacity>
 
                         <TouchableOpacity style={styles.keepBothBtn} onPress={onKeepBoth}>
-                            <Text style={styles.keepBothBtnText}>➕ 원본과 개선본 둘 다 보관</Text>
+                            <Text style={styles.keepBothBtnText}>➕ 원본과 복원본 둘 다 보관</Text>
                         </TouchableOpacity>
                     </View>
                 </View>
@@ -71,6 +84,10 @@ const styles = StyleSheet.create({
         borderRadius: 8,
         marginBottom: 16,
         textAlign: 'center',
+    },
+    compareNoticeColorize: {
+        color: '#D97706',
+        backgroundColor: '#FEF3C7',
     },
     compareRow: { flexDirection: 'row', gap: 16, flexWrap: 'wrap' },
     compareCol: { flex: 1, minWidth: 280 },
@@ -92,6 +109,10 @@ const styles = StyleSheet.create({
         paddingHorizontal: 10,
         paddingVertical: 4,
         borderRadius: 6,
+    },
+    compareTagColorize: {
+        color: '#D97706',
+        backgroundColor: '#FEF3C7',
     },
     imagePreviewBox: {
         width: '100%',
@@ -115,6 +136,9 @@ const styles = StyleSheet.create({
         paddingVertical: 12,
         borderRadius: 8,
         alignItems: 'center',
+    },
+    chooseColorizeBtn: {
+        backgroundColor: '#D97706',
     },
     chooseEnhancedBtnText: { color: '#FFFFFF', fontSize: 13, fontWeight: '700' },
     keepBothBtn: {

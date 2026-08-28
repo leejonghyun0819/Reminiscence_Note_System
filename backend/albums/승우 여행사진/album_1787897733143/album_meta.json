@@ -1,0 +1,50 @@
+{
+  "id": "album_1787897733143",
+  "fileNames": [
+    "image_0.jpg",
+    "image_1.jpg",
+    "image_2.jpg",
+    "image_3.jpg",
+    "image_4.jpg",
+    "image_5.jpg",
+    "image_6.jpg",
+    "image_7.jpg",
+    "image_8.jpg",
+    "image_9.jpg"
+  ],
+  "imageUrls": [
+    "http://localhost:8000/albums/승우 여행사진/album_1787897733143/image_0.jpg",
+    "http://localhost:8000/albums/승우 여행사진/album_1787897733143/image_1.jpg",
+    "http://localhost:8000/albums/승우 여행사진/album_1787897733143/image_2.jpg",
+    "http://localhost:8000/albums/승우 여행사진/album_1787897733143/image_3.jpg",
+    "http://localhost:8000/albums/승우 여행사진/album_1787897733143/image_4.jpg",
+    "http://localhost:8000/albums/승우 여행사진/album_1787897733143/image_5.jpg",
+    "http://localhost:8000/albums/승우 여행사진/album_1787897733143/image_6.jpg",
+    "http://localhost:8000/albums/승우 여행사진/album_1787897733143/image_7.jpg",
+    "http://localhost:8000/albums/승우 여행사진/album_1787897733143/image_8.jpg",
+    "http://localhost:8000/albums/승우 여행사진/album_1787897733143/image_9.jpg"
+  ],
+  "audioFileName": null,
+  "audioUrl": null,
+  "categoryFolder": "승우 여행사진",
+  "analysis": {
+    "title": "청춘을 싣고 달린 강릉 밤바다",
+    "location": "강원도 강릉 (안목해변 및 아르떼뮤지엄)",
+    "yearEstimate": "2023년 가을",
+    "description": "친구들과 함께 스쿠터를 타고 강릉으로 떠나 밤바다에서 폭죽을 터뜨리고 미디어아트 전시를 관람한 특별한 여정입니다. 낮에는 바다가 보이는 곳에서 순두부 젤라또를 즐기고, 밤에는 해변가 도로를 라이딩하며 소중한 기억을 만들어갔습니다.",
+    "storyCaption": "시원한 밤바람을 맞으며 스쿠터로 달렸던 그 길 끝에는 어둠을 밝히는 작은 불꽃과 친구들의 웃음소리가 기다리고 있었습니다. 강릉 바다 앞에서 나누었던 담백한 글귀와 맛있는 디저트, 몰입감 넘치던 전시의 순간들이 사진 속에 고스란히 담겨 있습니다. 함께였기에 더욱 자유롭고 빛났던 그날의 밤은 청춘의 한 페이지처럼 오래도록 가슴속에 남을 것입니다.",
+    "audioTranscriptSummary": ""
+  },
+  "history": [
+    {
+      "version": 1,
+      "timestamp": 1787897733522,
+      "title": "청춘을 싣고 달린 강릉 밤바다",
+      "location": "강원도 강릉 (안목해변 및 아르떼뮤지엄)",
+      "yearEstimate": "2023년 가을",
+      "description": "친구들과 함께 스쿠터를 타고 강릉으로 떠나 밤바다에서 폭죽을 터뜨리고 미디어아트 전시를 관람한 특별한 여정입니다. 낮에는 바다가 보이는 곳에서 순두부 젤라또를 즐기고, 밤에는 해변가 도로를 라이딩하며 소중한 기억을 만들어갔습니다.",
+      "storyCaption": "시원한 밤바람을 맞으며 스쿠터로 달렸던 그 길 끝에는 어둠을 밝히는 작은 불꽃과 친구들의 웃음소리가 기다리고 있었습니다. 강릉 바다 앞에서 나누었던 담백한 글귀와 맛있는 디저트, 몰입감 넘치던 전시의 순간들이 사진 속에 고스란히 담겨 있습니다. 함께였기에 더욱 자유롭고 빛났던 그날의 밤은 청춘의 한 페이지처럼 오래도록 가슴속에 남을 것입니다."
+    }
+  ],
+  "createdAt": 1787897733516
+}

@@ -77,7 +77,7 @@ export default function HomeScreen() {
         const selectedItems = memoryList.filter((item) => selectedCardIds.has(item.id));
         addMultipleToGeneratedNotes(selectedItems);
         setSelectedCardIds(new Set());
-        router.push('/generate');
+        router.push('/(tabs)/generate');
     };
 
     const handleBatchDeleteFromIndex = async () => {
@@ -144,7 +144,7 @@ export default function HomeScreen() {
                         storyCaption: targetItem.analysis.storyCaption || '',
                         audioTranscriptSummary: targetItem.analysis.audioTranscriptSummary || '',
                     };
-                    const refined = await refineMemoryWithGemini(currentDraft, refineNote);
+                    const refined = await refineMemoryWithGemini(currentDraft, refineNote, targetItem.imageUrls);
                     await updateMemoryItem(targetItem.id, refined);
                 }
             }
@@ -212,7 +212,7 @@ export default function HomeScreen() {
         setProgressPercent(5);
 
         try {
-            let aiTargetImages = [...imageFiles];
+            let aiTargetImages: any[] = [...imageFiles];
             if (videoFiles.length > 0) {
                 setLoadingText(`동영상(${videoFiles.length}개)에서 핵심 장면 추출 중...`);
                 for (let i = 0; i < videoFiles.length; i++) {
@@ -411,7 +411,7 @@ export default function HomeScreen() {
                 storyCaption: item.analysis.storyCaption || '',
                 audioTranscriptSummary: item.analysis.audioTranscriptSummary || '',
             };
-            const refinedResult = await refineMemoryWithGemini(currentDraft, note);
+            const refinedResult = await refineMemoryWithGemini(currentDraft, note, item.imageUrls);
             await updateMemoryItem(item.id, refinedResult);
             setUserNotes((prev) => ({ ...prev, [item.id]: '' }));
         } catch (e: any) {
@@ -495,9 +495,9 @@ export default function HomeScreen() {
                 <View style={styles.resultSection}>
                     <View style={styles.resultHeaderRow}>
                         <View>
-                            <Text
-                                style={styles.resultSectionTitle}
-                            >{`✨ 완성된 추억 앨범 (${memoryList.length}개)`}</Text>
+                            <Text style={styles.resultSectionTitle}>
+                                {`✨ 완성된 추억 앨범 (${memoryList.length}개)`}
+                            </Text>
                             <Text style={styles.resultSectionSubtitle}>
                                 각 카드 위로 사진을 드래그 앤 드롭하여 바로 추가하거나, 체크박스로 노트를 내보낼 수
                                 있습니다.
@@ -617,7 +617,9 @@ export default function HomeScreen() {
                                                                         borderRadius: 8,
                                                                     }}
                                                                 >
-                                                                    <span style={{ fontSize: 28 }}>▶</span>
+                                                                    <span style={{ fontSize: 28, color: '#FFF' }}>
+                                                                        ▶
+                                                                    </span>
                                                                 </div>
                                                             </div>
                                                         ) : (
@@ -641,12 +643,12 @@ export default function HomeScreen() {
                                                     }}
                                                 >
                                                     <Text style={styles.morePhotoBadgeIcon}>🔍</Text>
-                                                    <Text
-                                                        style={styles.morePhotoBadgeText}
-                                                    >{`+${item.imageUrls.length - 12}개 더보기`}</Text>
-                                                    <Text
-                                                        style={styles.morePhotoSubText}
-                                                    >{`(전체 ${item.imageUrls.length}개)`}</Text>
+                                                    <Text style={styles.morePhotoBadgeText}>
+                                                        {`+${item.imageUrls.length - 12}개 더보기`}
+                                                    </Text>
+                                                    <Text style={styles.morePhotoSubText}>
+                                                        {`(전체 ${item.imageUrls.length}개)`}
+                                                    </Text>
                                                 </TouchableOpacity>
                                             )}
                                         </MouseDragHorizontalScroll>
@@ -678,9 +680,9 @@ export default function HomeScreen() {
 
                                     <View style={styles.resultInfo}>
                                         <View style={styles.cardHeaderRow}>
-                                            <Text
-                                                style={styles.noteTitle}
-                                            >{`${idx + 1}. ${item.analysis?.title || '종합 분석 완료'}`}</Text>
+                                            <Text style={styles.noteTitle}>
+                                                {`${idx + 1}. ${item.analysis?.title || '종합 분석 완료'}`}
+                                            </Text>
                                             <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
                                                 <TouchableOpacity
                                                     style={styles.addMediaBtn}
@@ -762,11 +764,11 @@ export default function HomeScreen() {
                                                         style={styles.enhanceActionBtn}
                                                         onPress={() => {
                                                             setSelectedEnhanceMemory(item);
-                                                            router.push('/enhance');
+                                                            router.push('/(tabs)/enhance');
                                                         }}
                                                     >
                                                         <Text style={styles.enhanceActionBtnText}>
-                                                            ✨ 사진 화질 개선
+                                                            ✨ 사진 화질 개선 / 컬러 복원
                                                         </Text>
                                                     </TouchableOpacity>
 
@@ -774,7 +776,7 @@ export default function HomeScreen() {
                                                         style={styles.generateActionBtn}
                                                         onPress={() => {
                                                             addToGeneratedNotes(item);
-                                                            router.push('/generate');
+                                                            router.push('/(tabs)/generate');
                                                         }}
                                                     >
                                                         <Text style={styles.generateActionBtnText}>
@@ -792,13 +794,14 @@ export default function HomeScreen() {
                 </View>
             )}
 
-            {/* 분리된 전용 모달 */}
-            <GalleryViewerModal
-                item={galleryItem}
-                initialIdx={galleryInitialIdx}
-                onClose={() => setGalleryItem(null)}
+            {/* 모달 */}
+            <GalleryViewerModal visible={!!galleryItem} album={galleryItem} onClose={() => setGalleryItem(null)} />
+            <EditMemoryModal
+                visible={!!editingItem}
+                album={editingItem}
+                onClose={() => setEditingItem(null)}
+                onSaveSuccess={() => setEditingItem(null)}
             />
-            <EditMemoryModal item={editingItem} onClose={() => setEditingItem(null)} />
         </ScrollView>
     );
 }
@@ -836,7 +839,13 @@ const styles = StyleSheet.create({
         borderColor: '#F5933C',
         backgroundColor: '#FCE7BD',
     },
-    dropZoneTitle: { fontSize: 22, fontWeight: '600', color: '#2D2D2D', marginBottom: 6, textAlign: 'center' },
+    dropZoneTitle: {
+        fontSize: 22,
+        fontWeight: '600',
+        color: '#2D2D2D',
+        marginBottom: 6,
+        textAlign: 'center',
+    },
     dropZoneSubtitle: { fontSize: 14, color: '#6B5E4C', marginBottom: 20, textAlign: 'center' },
     fileIconWrapper: { marginBottom: 20 },
     fileIcon: { fontSize: 36 },

@@ -7,10 +7,10 @@ from typing import Optional, List
 from urllib.parse import urlparse
 from fastapi import APIRouter, File, UploadFile, Form, HTTPException
 
-from config import ALBUMS_DIR
+from config import ALBUMS_DIR, ENHANCED_DIR
 from database import get_db_cursor
 from models import UpdateMemoryRequest, SwapImageRequest, DeleteImageRequest, AppendImageRequest
-from utils.media_utils import save_media_file, enhance_image_with_youcam
+from utils.media_utils import save_media_file, enhance_image_with_youcam, colorize_image_with_youcam
 from utils.file_utils import (
     row_to_memory_dict,
     find_album_folder_path,
@@ -19,6 +19,46 @@ from utils.file_utils import (
 )
 
 router = APIRouter(prefix="/api/memories", tags=["Memories"])
+
+
+def find_local_media_path(target_url: str) -> str:
+    """URL로부터 로컬 디스크의 실제 이미지 파일 경로를 완벽하게 탐색"""
+    parsed = urlparse(target_url)
+    rel_path = parsed.path.lstrip("/")  # 예: "enhanced/xxx.jpg" 또는 "albums/folder/xxx.jpg"
+    file_name = os.path.basename(rel_path)
+
+    # 1. /enhanced/ 경로인 경우 ENHANCED_DIR에서 직접 탐색
+    if rel_path.startswith("enhanced/"):
+        enhanced_path = os.path.join(ENHANCED_DIR, file_name)
+        if os.path.exists(enhanced_path) and os.path.isfile(enhanced_path):
+            return enhanced_path
+
+    # 2. /albums/ 경로인 경우 ALBUMS_DIR 기준으로 탐색
+    if rel_path.startswith("albums/"):
+        album_sub_path = rel_path[len("albums/"):].lstrip("/")
+        direct_album_path = os.path.join(ALBUMS_DIR, album_sub_path)
+        if os.path.exists(direct_album_path) and os.path.isfile(direct_album_path):
+            return direct_album_path
+
+    # 3. ENHANCED_DIR에 해당 파일명이 있는지 탐색 (연쇄 작업 지원)
+    fallback_enhanced = os.path.join(ENHANCED_DIR, file_name)
+    if os.path.exists(fallback_enhanced) and os.path.isfile(fallback_enhanced):
+        return fallback_enhanced
+
+    # 4. ALBUMS_DIR 및 모든 하위 폴더 재귀 탐색
+    for root, _, files in os.walk(ALBUMS_DIR):
+        if file_name in files:
+            found = os.path.join(root, file_name)
+            if os.path.isfile(found):
+                return found
+
+    # 5. 프로젝트 상위 루트 기준 탐색
+    project_root = os.path.dirname(ALBUMS_DIR)
+    root_direct_path = os.path.join(project_root, rel_path)
+    if os.path.exists(root_direct_path) and os.path.isfile(root_direct_path):
+        return root_direct_path
+
+    raise HTTPException(status_code=404, detail="서버에 해당 원본 파일이 존재하지 않습니다.")
 
 
 @router.get("")
@@ -291,19 +331,9 @@ async def enhance_single_image(
     memory_id: str,
     targetImageUrl: str = Form(...)
 ):
-    """YouCam AI API를 호출하여 개별 사진 화질 개선"""
+    """YouCam AI 초고화질 개선 (Super Resolution) - 연쇄 작업 완벽 지원"""
     try:
-        parsed = urlparse(targetImageUrl)
-        rel_path = parsed.path.lstrip("/")
-        local_file_path = os.path.join(os.path.dirname(ALBUMS_DIR), rel_path)
-
-        if not os.path.exists(local_file_path):
-            alt_path = os.path.join(ALBUMS_DIR, os.path.basename(rel_path))
-            if os.path.exists(alt_path):
-                local_file_path = alt_path
-            else:
-                raise HTTPException(status_code=404, detail="서버에 해당 원본 파일이 존재하지 않습니다.")
-
+        local_file_path = find_local_media_path(targetImageUrl)
         new_enhanced_url = enhance_image_with_youcam(local_file_path, memory_id)
 
         return {
@@ -316,9 +346,29 @@ async def enhance_single_image(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/{memory_id}/colorize-image")
+async def colorize_single_image(
+    memory_id: str,
+    targetImageUrl: str = Form(...)
+):
+    """🎨 YouCam AI 흑백 사진 컬러 복원 (Colorize) - 연쇄 작업 완벽 지원"""
+    try:
+        local_file_path = find_local_media_path(targetImageUrl)
+        new_colorized_url = colorize_image_with_youcam(local_file_path, memory_id)
+
+        return {
+            "status": "success",
+            "oldUrl": targetImageUrl,
+            "newUrl": new_colorized_url
+        }
+    except Exception as e:
+        print(f"YouCam 흑백 컬러 복원 오류: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.put("/{memory_id}/swap-image")
 def swap_memory_image(memory_id: str, payload: SwapImageRequest):
-    """AI 개선본 사진으로 원본 이미지 교체 반영"""
+    """AI 개선본/복원본 사진으로 원본 이미지 교체 반영"""
     with get_db_cursor() as cursor:
         cursor.execute("SELECT image_urls_json FROM memories WHERE id = ?", (memory_id,))
         row = cursor.fetchone()
@@ -339,7 +389,7 @@ def swap_memory_image(memory_id: str, payload: SwapImageRequest):
 
 @router.post("/{memory_id}/append-image-url")
 def append_single_image_url(memory_id: str, payload: AppendImageRequest):
-    """기존 원본을 유지하면서 AI 개선본 사진을 앨범에 새 사진으로 추가"""
+    """기존 원본을 유지하면서 AI 결과 사진을 앨범에 새 사진으로 추가"""
     with get_db_cursor() as cursor:
         cursor.execute("SELECT image_urls_json, file_names_json FROM memories WHERE id = ?", (memory_id,))
         row = cursor.fetchone()
