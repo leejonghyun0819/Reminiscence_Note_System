@@ -1,0 +1,52 @@
+{
+  "id": "album_1787982317098",
+  "fileNames": [
+    "image_0.jpg",
+    "image_1.jpg",
+    "image_2.jpg",
+    "image_3.jpg",
+    "image_4.jpg",
+    "image_5.jpg",
+    "image_6.jpg",
+    "image_7.jpg",
+    "image_8.jpg",
+    "image_9.jpg",
+    "image_10.jpg"
+  ],
+  "imageUrls": [
+    "http://localhost:8000/albums/가족/album_1787982317098/image_0.jpg",
+    "http://localhost:8000/albums/가족/album_1787982317098/image_1.jpg",
+    "http://localhost:8000/albums/가족/album_1787982317098/image_2.jpg",
+    "http://localhost:8000/albums/가족/album_1787982317098/image_3.jpg",
+    "http://localhost:8000/albums/가족/album_1787982317098/image_4.jpg",
+    "http://localhost:8000/albums/가족/album_1787982317098/image_5.jpg",
+    "http://localhost:8000/albums/가족/album_1787982317098/image_6.jpg",
+    "http://localhost:8000/albums/가족/album_1787982317098/image_7.jpg",
+    "http://localhost:8000/albums/가족/album_1787982317098/image_8.jpg",
+    "http://localhost:8000/albums/가족/album_1787982317098/image_9.jpg",
+    "http://localhost:8000/albums/가족/album_1787982317098/image_10.jpg"
+  ],
+  "audioFileName": null,
+  "audioUrl": null,
+  "categoryFolder": "가족",
+  "analysis": {
+    "title": "울산에서 보낸 낭만적인 하루",
+    "location": "울산 울주군 (카페 농도 & 언양) 및 동해 밤바다",
+    "yearEstimate": "2023년 늦여름",
+    "description": "울산의 고즈넉한 한옥 카페 '농도'에서 푸른 저수지 풍경을 보며 커피와 디저트를 즐기고, 언양불고기와 피자 등 맛있는 음식을 나누었습니다. 밤에는 캄캄한 바닷가로 이동해 스파클러와 불꽃을 쏘아 올리며 아늑한 시간을 보냈습니다.",
+    "storyCaption": "구름이 짙게 내려앉은 한옥 창밖으로 바라본 저수지의 정취가 마음을 차분히 다독여주던 날이었습니다. 정성스러운 정식과 달콤한 디저트로 입안 가득 행복을 채우고, 빗길을 지나 다다른 밤바다에서 피워 올린 작고 반짝이는 불꽃들. 잔잔한 파도 소리와 흩날리는 불꽃 스파클러 속에 웃음꽃을 피우며 또 하나의 빛나는 추억 페이지를 완성했습니다.",
+    "audioTranscriptSummary": ""
+  },
+  "history": [
+    {
+      "version": 1,
+      "timestamp": 1787982319444,
+      "title": "울산에서 보낸 낭만적인 하루",
+      "location": "울산 울주군 (카페 농도 & 언양) 및 동해 밤바다",
+      "yearEstimate": "2023년 늦여름",
+      "description": "울산의 고즈넉한 한옥 카페 '농도'에서 푸른 저수지 풍경을 보며 커피와 디저트를 즐기고, 언양불고기와 피자 등 맛있는 음식을 나누었습니다. 밤에는 캄캄한 바닷가로 이동해 스파클러와 불꽃을 쏘아 올리며 아늑한 시간을 보냈습니다.",
+      "storyCaption": "구름이 짙게 내려앉은 한옥 창밖으로 바라본 저수지의 정취가 마음을 차분히 다독여주던 날이었습니다. 정성스러운 정식과 달콤한 디저트로 입안 가득 행복을 채우고, 빗길을 지나 다다른 밤바다에서 피워 올린 작고 반짝이는 불꽃들. 잔잔한 파도 소리와 흩날리는 불꽃 스파클러 속에 웃음꽃을 피우며 또 하나의 빛나는 추억 페이지를 완성했습니다."
+    }
+  ],
+  "createdAt": 1787982319433
+}

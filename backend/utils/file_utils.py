@@ -5,37 +5,74 @@ import sqlite3
 import shutil
 import re
 import time
-from typing import Optional, Dict, Any
-from config import ALBUMS_DIR
+from typing import Optional, Dict, Any, List
+from pathlib import Path
+from config import ALBUMS_DIR, ENHANCED_DIR
 from database import get_db_cursor
 
+
+def find_local_media_path(target_filename: str) -> Optional[str]:
+    """파일명 또는 URL에서 파일명을 추출하여 enhanced 및 albums 디렉토리에서 실제 로컬 경로 탐색"""
+    if not target_filename:
+        return None
+
+    # URL 쿼리스트링 및 경로 정리 후 순수 파일명 추출
+    clean_name = os.path.basename(target_filename.split("?")[0])
+    search_dirs = [ENHANCED_DIR, ALBUMS_DIR]
+
+    for directory in search_dirs:
+        if not os.path.exists(directory):
+            continue
+        for root, _, files in os.walk(directory):
+            if clean_name in files:
+                return os.path.join(root, clean_name)
+    return None
+
+
 def row_to_memory_dict(row: sqlite3.Row) -> Dict[str, Any]:
+    """SQLite Row 객체를 프론트엔드용 MemoryItem 딕셔너리로 변환"""
     history_list = []
     if "history_json" in row.keys() and row["history_json"]:
         try:
             history_list = json.loads(row["history_json"])
         except Exception:
-            pass
+            history_list = []
+
+    file_names = []
+    if "file_names_json" in row.keys() and row["file_names_json"]:
+        try:
+            file_names = json.loads(row["file_names_json"])
+        except Exception:
+            file_names = []
+
+    image_urls = []
+    if "image_urls_json" in row.keys() and row["image_urls_json"]:
+        try:
+            image_urls = json.loads(row["image_urls_json"])
+        except Exception:
+            image_urls = []
 
     return {
         "id": row["id"],
-        "fileNames": json.loads(row["file_names_json"]),
-        "imageUrls": json.loads(row["image_urls_json"]),
-        "audioFileName": row["audio_file_name"],
-        "audioUrl": row["audio_url"],
-        "categoryFolder": row["category_folder"] or "미분류",
+        "fileNames": file_names,
+        "imageUrls": image_urls,
+        "audioFileName": row["audio_file_name"] if "audio_file_name" in row.keys() else None,
+        "audioUrl": row["audio_url"] if "audio_url" in row.keys() else None,
+        "categoryFolder": (row["category_folder"] if "category_folder" in row.keys() else None) or "미분류",
         "history": history_list,
         "analysis": {
-            "title": row["title"],
-            "location": row["location"],
-            "yearEstimate": row["year_estimate"],
-            "description": row["description"],
-            "storyCaption": row["story_caption"],
-            "audioTranscriptSummary": row["audio_transcript_summary"],
+            "title": row["title"] if "title" in row.keys() else "",
+            "location": row["location"] if "location" in row.keys() else "",
+            "yearEstimate": row["year_estimate"] if "year_estimate" in row.keys() else "",
+            "description": row["description"] if "description" in row.keys() else "",
+            "storyCaption": row["story_caption"] if "story_caption" in row.keys() else "",
+            "audioTranscriptSummary": row["audio_transcript_summary"] if "audio_transcript_summary" in row.keys() else "",
         }
     }
 
+
 def find_album_folder_path(target_id: str) -> Optional[str]:
+    """앨범 ID를 기반으로 albums 폴더 내의 실제 디렉터리 경로 탐색"""
     if not target_id or target_id == "undefined":
         return None
 
@@ -61,7 +98,9 @@ def find_album_folder_path(target_id: str) -> Optional[str]:
                 pass
     return None
 
+
 def read_album_meta(folder_path: str) -> Dict[str, Any]:
+    """album_meta.json 파일 읽기"""
     meta_path = os.path.join(folder_path, "album_meta.json")
     if os.path.exists(meta_path):
         try:
@@ -71,7 +110,9 @@ def read_album_meta(folder_path: str) -> Dict[str, Any]:
             pass
     return {}
 
+
 def write_album_meta(folder_path: str, meta: Dict[str, Any]):
+    """album_meta.json 파일 저장"""
     meta_path = os.path.join(folder_path, "album_meta.json")
     try:
         with open(meta_path, "w", encoding="utf-8") as f:
@@ -79,7 +120,9 @@ def write_album_meta(folder_path: str, meta: Dict[str, Any]):
     except Exception as e:
         print(f"⚠️ 메타 파일 저장 실패 ({folder_path}): {e}")
 
+
 def internal_move_single_album(album_id: str, target_folder: str) -> bool:
+    """앨범 폴더 이동 및 메타/DB 동기화"""
     target_folder = target_folder.strip() or "미분류"
     src_folder_path = find_album_folder_path(album_id)
     if not src_folder_path:
@@ -116,7 +159,9 @@ def internal_move_single_album(album_id: str, target_folder: str) -> bool:
 
     return True
 
+
 def restore_memory_from_meta(folder_path: str, cursor: sqlite3.Cursor) -> Optional[Dict[str, Any]]:
+    """백업 메타 파일로부터 DB 레코드 복원"""
     meta = read_album_meta(folder_path)
     if not meta:
         return None

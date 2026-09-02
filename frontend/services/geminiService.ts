@@ -83,22 +83,35 @@ export async function analyzeMultiImageMemoryWithGemini(
     }
 }
 
-/**
- * AI 재분석 (사용자 코멘트 반영)
- */
 export async function refineMemoryWithGemini(
-    currentAnalysis: Partial<AnalysisResult>,
-    userComment: string,
-    images?: any[],
-    audioData?: any,
-): Promise<AnalysisResult> {
-    const combinedComment = `[기존 분석 데이터]\n제목: ${currentAnalysis.title || ''}\n장소: ${
-        currentAnalysis.location || ''
-    }\n시기: ${currentAnalysis.yearEstimate || ''}\n설명: ${
-        currentAnalysis.description || ''
-    }\n\n[사용자 추가 회상 요청]: ${userComment}`;
+    currentDraft: {
+        title?: string;
+        location?: string;
+        yearEstimate?: string;
+        description?: string;
+        storyCaption?: string;
+        audioTranscriptSummary?: string;
+    },
+    userNote: string,
+    imageUrls?: string[], // 선택적 파라미터로 유지하되 Gemini 페이로드에는 텍스트 위주로 구성
+) {
+    // 백엔드 프록시 라우터 (/api/gemini/refine) 호출 방식
+    const response = await fetch('http://localhost:8000/api/gemini/refine', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            current_draft: currentDraft,
+            user_note: userNote,
+        }),
+    });
 
-    return analyzeMultiImageMemoryWithGemini(images || [], audioData || null, combinedComment);
+    if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || errorData.message || 'AI 재분석 요청에 실패했습니다.');
+    }
+
+    const result = await response.json();
+    return result.refined;
 }
-
-export const analyzeSingleMemoryWithGemini = analyzeMultiImageMemoryWithGemini;

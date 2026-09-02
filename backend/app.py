@@ -5,21 +5,19 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
+from routers import gemini, youcam, memories, folders, backup
 
 from config import ALBUMS_DIR, ENHANCED_DIR
 from database import init_db
 
 # -------------------------------------------------------------
-# 라우터 모듈 안전 Import (파일명 불일치 자동 대응)
+# 라우터 모듈 Import (실제 존재하는 파일명 기준)
 # -------------------------------------------------------------
 # 1. AI 라우터
 try:
     from routers.gemini import router as ai_router
 except ImportError:
-    try:
-        from routers.ai import router as ai_router
-    except ImportError:
-        ai_router = None
+    ai_router = None
 
 # 2. Memories 라우터
 try:
@@ -37,10 +35,7 @@ except ImportError:
 try:
     from routers.backup import router as backup_router
 except ImportError:
-    try:
-        from routers.backup_albums import router as backup_router
-    except ImportError:
-        backup_router = None
+    backup_router = None
 
 
 @asynccontextmanager
@@ -70,10 +65,12 @@ app.add_middleware(
 )
 
 # 라우터 등록
-if ai_router: app.include_router(ai_router)
-if memories_router: app.include_router(memories_router)
-if folders_router: app.include_router(folders_router)
-if backup_router: app.include_router(backup_router)
+app.include_router(gemini.router)
+app.include_router(youcam.router)
+app.include_router(memories.router)
+app.include_router(folders.router)
+app.include_router(backup.router)
+
 
 
 # -------------------------------------------------------------
