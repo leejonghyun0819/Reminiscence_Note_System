@@ -584,7 +584,11 @@ export default function IndexScreen() {
                                                             item.mode === 'travel' && styles.modeBadgeTravel,
                                                         ]}
                                                     >
-                                                        {item.mode === 'travel' ? '✈️ 여행' : '🧸 유년시절'}
+                                                        {item.mode === 'travel'
+                                                            ? '✈️ 여행'
+                                                            : item.mode === 'childhood'
+                                                              ? '🧸 유년시절'
+                                                              : '❓ 분류 미정'}
                                                     </Text>
                                                     <Text style={styles.categoryBadge}>
                                                         {item.categoryFolder || '미분류'}
