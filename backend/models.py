@@ -30,6 +30,9 @@ class UpdateMemoryRequest(BaseModel):
     description: Optional[str] = None
     storyCaption: Optional[str] = None
     categoryFolder: Optional[str] = None
+    mode: Optional[str] = None  # 🌟 추가 ("childhood" 또는 "travel")
+    curatedNote: Optional[dict] = None
+    interviewData: Optional[dict] = None
 
 class CreateFolderRequest(BaseModel):
     name: str

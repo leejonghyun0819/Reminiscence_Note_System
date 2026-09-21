@@ -1,1152 +1,922 @@
 // frontend/app/(tabs)/index.tsx
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef } from 'react';
 import {
-    StyleSheet,
-    Text,
     View,
+    Text,
+    StyleSheet,
     TouchableOpacity,
     ScrollView,
-    Platform,
     Image,
     ActivityIndicator,
-    TextInput,
+    Alert,
+    Platform,
 } from 'react-native';
+import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
-import { analyzeMultiImageMemoryWithGemini, refineMemoryWithGemini } from '../../services/geminiService';
 import { useMemory, MemoryItem } from '../../context/MemoryContext';
-import { MouseDragHorizontalScroll } from '../../features/backup/MouseDragHorizontalScroll';
+import {
+    analyzeMultiImageMemoryWithGemini,
+    generateMemoryInterview,
+    generateInterviewFromExistingAlbum,
+    detectMemoryMode,
+    InterviewResponseData,
+    CuratedNoteData,
+} from '../../services/geminiService';
+import { MemoryInterviewModal } from '../../components/MemoryInterviewModal';
 import { DroppableAlbumCard } from '../../features/index/DroppableAlbumCard';
 import { GalleryViewerModal } from '../../features/index/GalleryViewerModal';
 import { EditMemoryModal } from '../../features/index/EditMemoryModal';
-import {
-    isVideoUrl,
-    extractFramesFromVideo,
-    compressImageForAnalysis,
-    readFileAsDataURL,
-} from '../../utils/mediaProcessUtils';
 
-const MAX_IMAGE_COUNT = 50;
-
-export default function HomeScreen() {
+export default function IndexScreen() {
     const router = useRouter();
     const {
         memoryList,
+        folderList,
         addMultiImageMemoryToServer,
         appendFilesToMemory,
         updateMemoryItem,
-        setSelectedEnhanceMemory,
-        addToGeneratedNotes,
-        addMultipleToGeneratedNotes,
         deleteMemoryItem,
-        deleteMultipleMemoryItems,
-        clearAllMemories,
+        selectedEnhanceMemory,
+        setSelectedEnhanceMemory,
     } = useMemory();
 
-    const [isLoading, setIsLoading] = useState<boolean>(false);
-    const [loadingText, setLoadingText] = useState<string>('');
-    const [progressPercent, setProgressPercent] = useState<number>(0);
+    const [selectedImages, setSelectedImages] = useState<any[]>([]);
+    const [selectedAudio, setSelectedAudio] = useState<any | null>(null);
+    const [selectedFolder, setSelectedFolder] = useState<string>('미분류');
+    const [isProcessing, setIsProcessing] = useState<boolean>(false);
+    const [statusMessage, setStatusMessage] = useState<string>('');
 
-    const [isDragging, setIsDragging] = useState<boolean>(false);
-    const dropAreaRef = useRef<any>(null);
+    // 인터뷰 모달 상태
+    const [interviewModalVisible, setInterviewModalVisible] = useState<boolean>(false);
+    const [interviewData, setInterviewData] = useState<InterviewResponseData | null>(null);
+    const [activeEditingMemory, setActiveEditingMemory] = useState<MemoryItem | null>(null);
+    const [initialAnswers, setInitialAnswers] = useState<Record<string, string>>({});
+    const [initialExtraStory, setInitialExtraStory] = useState<string>('');
 
-    const [userNotes, setUserNotes] = useState<{ [key: string]: string }>({});
-    const [refiningMap, setRefiningMap] = useState<{ [key: string]: boolean }>({});
-    const [selectedCardIds, setSelectedCardIds] = useState<Set<string>>(new Set());
+    // 미디어 갤러리 뷰어 및 상세 편집 모달 상태
+    const [viewingGalleryAlbum, setViewingGalleryAlbum] = useState<MemoryItem | null>(null);
+    const [editingAlbum, setEditingAlbum] = useState<MemoryItem | null>(null);
 
-    // 갤러리 및 편집 모달 상태
-    const [galleryItem, setGalleryItem] = useState<MemoryItem | null>(null);
-    const [galleryInitialIdx, setGalleryInitialIdx] = useState<number>(0);
-    const [editingItem, setEditingItem] = useState<MemoryItem | null>(null);
+    // 홈 화면 다중 선택 상태 (홈에서 없애기용)
+    const [selectedAlbumIds, setSelectedAlbumIds] = useState<Set<string>>(new Set());
 
-    const toggleSelectCard = (id: string) => {
-        setSelectedCardIds((prev) => {
-            const next = new Set(prev);
-            if (next.has(id)) next.delete(id);
-            else next.add(id);
-            return next;
+    const imageInputRef = useRef<HTMLInputElement | null>(null);
+    const audioInputRef = useRef<HTMLInputElement | null>(null);
+
+    // 파일 객체 배열을 Base64 에셋으로 변환
+    const convertFilesToAssets = async (files: File[]) => {
+        const imageFiles = files.filter((f) => f.type.startsWith('image/'));
+        if (imageFiles.length === 0) return [];
+
+        return await Promise.all(
+            imageFiles.map(async (file: File) => {
+                return new Promise<any>((resolve) => {
+                    const reader = new FileReader();
+                    reader.onloadend = () => {
+                        resolve({
+                            file,
+                            name: file.name,
+                            uri: reader.result as string,
+                            base64: (reader.result as string).split(',')[1],
+                            mimeType: file.type || 'image/jpeg',
+                        });
+                    };
+                    reader.readAsDataURL(file);
+                });
+            }),
+        );
+    };
+
+    const handlePickImages = async () => {
+        if (Platform.OS === 'web') {
+            imageInputRef.current?.click();
+            return;
+        }
+        const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (status !== 'granted') {
+            Alert.alert('권한 필요', '사진 라이브러리 접근 권한이 필요합니다.');
+            return;
+        }
+        const result = await ImagePicker.launchImageLibraryAsync({
+            mediaTypes: ImagePicker.MediaTypeOptions.Images,
+            allowsMultipleSelection: true,
+            quality: 0.8,
+            base64: true,
         });
+        if (!result.canceled && result.assets) {
+            setSelectedImages((prev) => [...prev, ...result.assets]);
+        }
     };
 
-    const handleToggleSelectAll = () => {
-        const isAll = memoryList.length > 0 && memoryList.every((item) => selectedCardIds.has(item.id));
-        setSelectedCardIds(isAll ? new Set() : new Set(memoryList.map((item) => item.id)));
+    const handleWebImageChange = async (e: any) => {
+        const files = e.target.files;
+        if (!files || files.length === 0) return;
+        const converted = await convertFilesToAssets(Array.from(files));
+        setSelectedImages((prev) => [...prev, ...converted]);
+        e.target.value = '';
     };
 
-    const handleSendSelectedToGenerate = () => {
-        if (selectedCardIds.size === 0) return;
-        const selectedItems = memoryList.filter((item) => selectedCardIds.has(item.id));
-        addMultipleToGeneratedNotes(selectedItems);
-        setSelectedCardIds(new Set());
-        router.push('/(tabs)/generate');
+    // 🌟 신규 등록 카드에 드롭되었을 때 실행되는 함수
+    const handleDropFilesOnNewUploadCard = async (_targetItem: any, files: File[]) => {
+        const converted = await convertFilesToAssets(files);
+        if (converted.length > 0) {
+            setSelectedImages((prev) => [...prev, ...converted]);
+        } else {
+            Alert.alert('안내', '이미지 파일(JPG, PNG, WEBP 등)만 등록 가능합니다.');
+        }
     };
 
-    const handleBatchDeleteFromIndex = async () => {
-        if (selectedCardIds.size === 0) return;
-        const count = selectedCardIds.size;
+    // 기존 개별 앨범 카드에 드롭되었을 때 실행되는 함수
+    const handleDropFilesOnAlbum = async (targetItem: MemoryItem, files: File[]) => {
+        const imageFiles = files.filter((f) => f.type.startsWith('image/'));
+        if (imageFiles.length === 0) {
+            Alert.alert('안내', '이미지 파일만 추가 가능합니다.');
+            return;
+        }
+        setIsProcessing(true);
+        setStatusMessage('사진 추가 보관 중...');
+        try {
+            const ok = await appendFilesToMemory(targetItem.id, imageFiles);
+            if (ok) {
+                Alert.alert('완료', `${imageFiles.length}장의 사진이 추가되었습니다.`);
+            }
+        } finally {
+            setIsProcessing(false);
+            setStatusMessage('');
+        }
+    };
+
+    const handlePickAudio = () => {
+        if (Platform.OS === 'web') {
+            audioInputRef.current?.click();
+        } else {
+            Alert.alert('알림', '음성 파일 첨부는 웹 환경에서 지원됩니다.');
+        }
+    };
+
+    const handleWebAudioChange = (e: any) => {
+        const files = e.target.files;
+        if (!files || files.length === 0) return;
+        const file = files[0];
+        const reader = new FileReader();
+        reader.onloadend = () => {
+            setSelectedAudio({
+                file,
+                name: file.name,
+                uri: reader.result as string,
+                base64: (reader.result as string).split(',')[1],
+                mimeType: file.type || 'audio/mp3',
+            });
+        };
+        reader.readAsDataURL(file);
+        e.target.value = '';
+    };
+
+    // AI 모드 분석 및 신규 등록 처리
+    const handleStartProcess = async () => {
+        if (selectedImages.length === 0) {
+            Alert.alert('안내', '사진을 1장 이상 등록해주세요.');
+            return;
+        }
+
+        setIsProcessing(true);
+        try {
+            const imagePayload = selectedImages.map((img) => ({
+                base64: img.base64,
+                mimeType: img.mimeType || 'image/jpeg',
+            }));
+
+            setStatusMessage('사진의 시각적 특징과 연대를 전수 분석 중입니다...');
+            const detectedMode = await detectMemoryMode(imagePayload);
+
+            if (detectedMode === 'childhood') {
+                setStatusMessage('유년 시절의 단서를 포착하여 인터뷰를 구성 중입니다...');
+                const interviewRes = await generateMemoryInterview(imagePayload);
+                setActiveEditingMemory(null);
+                setInitialAnswers({});
+                setInitialExtraStory('');
+                setInterviewData({ ...interviewRes, detectedMode: 'childhood' } as any);
+                setInterviewModalVisible(true);
+            } else {
+                setStatusMessage('여행 및 일상의 순간을 기록하는 중입니다...');
+                const res = await analyzeMultiImageMemoryWithGemini(
+                    imagePayload,
+                    selectedAudio ? { base64: selectedAudio.base64, mimeType: selectedAudio.mimeType } : undefined,
+                );
+                await addMultiImageMemoryToServer(
+                    selectedImages,
+                    selectedAudio,
+                    { ...res, mode: 'travel' },
+                    selectedFolder,
+                );
+                setSelectedImages([]);
+                setSelectedAudio(null);
+                Alert.alert('완료', '✈️ 여행/일상 추억 앨범이 등록되었습니다.');
+            }
+        } catch (err: any) {
+            Alert.alert('실패', err.message || '추억 분석 중 문제가 발생했습니다.');
+        } finally {
+            setIsProcessing(false);
+            setStatusMessage('');
+        }
+    };
+
+    // 기존 앨범 인터뷰 수정/재분석
+    const handleOpenInterviewForExistingAlbum = async (item: MemoryItem) => {
+        setIsProcessing(true);
+        setStatusMessage('과거 사진의 단서를 전수 조사하여 기억 질문을 구성하는 중...');
+        setActiveEditingMemory(item);
+
+        try {
+            const interviewRes = await generateInterviewFromExistingAlbum(item.id, item.imageUrls);
+
+            const prevAnswers: Record<string, string> = {};
+            let prevExtra = '';
+            if (item.interviewData && Array.isArray(item.interviewData.questions)) {
+                item.interviewData.questions.forEach((q: any) => {
+                    if (q.id === 'extra_memory') {
+                        prevExtra = q.answer || '';
+                    } else if (q.id) {
+                        prevAnswers[q.id] = q.answer || '';
+                    }
+                });
+            }
+
+            setInterviewData(interviewRes);
+            setInitialAnswers(prevAnswers);
+            setInitialExtraStory(prevExtra);
+            setInterviewModalVisible(true);
+        } catch (err: any) {
+            Alert.alert('인터뷰 분석 오류', err.message || '사진을 분석하지 못했습니다.');
+        } finally {
+            setIsProcessing(false);
+            setStatusMessage('');
+        }
+    };
+
+    // 인터뷰 결과 큐레이션 완료 저장
+    const handleInterviewComplete = async (
+        curatedNote: CuratedNoteData,
+        qaPairs: Array<{ id: string; question: string; answer: string }>,
+        extraStory: string,
+    ) => {
+        if (!interviewData) return;
+        setIsProcessing(true);
+        setStatusMessage('인터뷰 답변을 바탕으로 추억 노트를 갱신 중...');
+
+        const finalMode = (interviewData as any).detectedMode || activeEditingMemory?.mode || 'childhood';
+
+        try {
+            const updatedInterviewData = {
+                estimatedEra: interviewData.estimatedEra,
+                sceneFacts: interviewData.sceneFacts,
+                visualClues: interviewData.visualClues,
+                questions: [
+                    ...qaPairs,
+                    ...(extraStory.trim()
+                        ? [{ id: 'extra_memory', category: '자유 회상', question: '추가 사연', answer: extraStory }]
+                        : []),
+                ],
+            };
+
+            if (activeEditingMemory) {
+                await updateMemoryItem(activeEditingMemory.id, {
+                    title: curatedNote.title,
+                    description: curatedNote.sceneDescription,
+                    storyCaption: `${curatedNote.remembered}\n\n${curatedNote.reflection}`,
+                    mode: finalMode,
+                    curatedNote: curatedNote,
+                    // @ts-ignore
+                    interviewData: updatedInterviewData,
+                });
+
+                Alert.alert(
+                    '재분석 완료',
+                    `수정된 인터뷰 내용을 반영하여 [${finalMode === 'travel' ? '✈️ 여행' : '🧸 유년시절'}] 추억 노트가 다시 작성되었습니다.`,
+                );
+            } else {
+                const payload = {
+                    mode: finalMode,
+                    curatedNote,
+                    interviewData: updatedInterviewData,
+                    analysis: {
+                        title: curatedNote.title,
+                        location: interviewData.sceneFacts.slice(0, 30),
+                        yearEstimate: interviewData.estimatedEra,
+                        description: curatedNote.sceneDescription,
+                        storyCaption: `${curatedNote.remembered}\n\n${curatedNote.reflection}`,
+                    },
+                };
+                await addMultiImageMemoryToServer(selectedImages, selectedAudio, payload, selectedFolder);
+                setSelectedImages([]);
+                setSelectedAudio(null);
+                Alert.alert(
+                    '완료',
+                    `${finalMode === 'travel' ? '✈️ 여행' : '🧸 유년시절'} 추억 노트가 완성되었습니다.`,
+                );
+            }
+
+            setInterviewModalVisible(false);
+            setInterviewData(null);
+            setActiveEditingMemory(null);
+            setInitialAnswers({});
+            setInitialExtraStory('');
+        } catch (err: any) {
+            Alert.alert('저장 실패', err.message || '저장 오류');
+        } finally {
+            setIsProcessing(false);
+            setStatusMessage('');
+        }
+    };
+
+    const handleRemoveSingleFromHome = (id: string, title?: string) => {
         const ok =
             Platform.OS === 'web'
                 ? window.confirm(
-                      `선택한 ${count}개의 앨범을 현재 작업 목록에서만 제외하시겠습니까?\n(※ 보관함에는 안전하게 보존됩니다.)`,
+                      `'${title || '이 추억'}'을(를) 홈 작업 화면에서 없애시겠습니까?\n(추억 보관함에는 안전하게 유지됩니다.)`,
                   )
                 : true;
         if (!ok) return;
 
-        await deleteMultipleMemoryItems(Array.from(selectedCardIds));
-        setSelectedCardIds(new Set());
+        deleteMemoryItem(id);
+        setSelectedAlbumIds((prev) => {
+            const next = new Set(prev);
+            next.delete(id);
+            return next;
+        });
     };
 
-    const executeAppendFilesToMemory = async (targetItem: MemoryItem, newFiles: File[]) => {
-        const validFiles = newFiles.filter(
-            (f) =>
-                f.type.startsWith('image/') ||
-                f.type.startsWith('video/') ||
-                f.name.toLowerCase().endsWith('.heic') ||
-                f.name.toLowerCase().endsWith('.mp4') ||
-                f.name.toLowerCase().endsWith('.mov') ||
-                f.name.toLowerCase().endsWith('.webm') ||
-                f.name.toLowerCase().endsWith('.m4v'),
-        );
-
-        if (validFiles.length === 0) {
-            alert('추가 가능한 사진 또는 동영상 파일이 없습니다.');
-            return;
-        }
-
-        const currentCount = targetItem.imageUrls.length;
-        if (currentCount + validFiles.length > MAX_IMAGE_COUNT) {
-            alert(`⚠️ 한 앨범당 최대 ${MAX_IMAGE_COUNT}장까지만 보관할 수 있습니다. (현재: ${currentCount}장)`);
-            return;
-        }
-
-        setIsLoading(true);
-        setLoadingText(`'${targetItem.analysis?.title || '추억'}'에 새로운 미디어(${validFiles.length}개) 추가 중...`);
-        setProgressPercent(30);
-
-        try {
-            const res = await appendFilesToMemory(targetItem.id, validFiles);
-            setProgressPercent(80);
-
-            if (res) {
-                const shouldReAnalyze = window.confirm(
-                    `✨ ${validFiles.length}개의 미디어가 성공적으로 추가되었습니다!\n\n새로 추가된 사진들을 바탕으로 Gemini AI에게 기존 사연을 보강하여 다시 작성하게 하시겠습니까?`,
-                );
-
-                if (shouldReAnalyze && targetItem.analysis) {
-                    setLoadingText('새로 추가된 사진을 포함하여 Gemini AI가 사연을 다시 보강 중...');
-                    setProgressPercent(90);
-
-                    const refineNote = `새로 추가된 ${validFiles.length}장의 사진 내용도 함께 종합하여 전체 상황 요약과 감성 에세이를 더 풍성하게 다듬어줘.`;
-                    const currentDraft = {
-                        title: targetItem.analysis.title || '',
-                        location: targetItem.analysis.location || '',
-                        yearEstimate: targetItem.analysis.yearEstimate || '',
-                        description: targetItem.analysis.description || '',
-                        storyCaption: targetItem.analysis.storyCaption || '',
-                        audioTranscriptSummary: targetItem.analysis.audioTranscriptSummary || '',
-                    };
-                    const refined = await refineMemoryWithGemini(currentDraft, refineNote, targetItem.imageUrls);
-                    await updateMemoryItem(targetItem.id, refined);
-                }
-            }
-            setProgressPercent(100);
-        } catch (err: any) {
-            alert(`추가 오류: ${err.message || '다시 시도해주세요.'}`);
-        } finally {
-            setIsLoading(false);
-            setLoadingText('');
-            setProgressPercent(0);
-        }
-    };
-
-    const handleAppendMediaToMemory = (targetItem: MemoryItem) => {
-        if (Platform.OS === 'web') {
-            const input = document.createElement('input');
-            input.type = 'file';
-            input.multiple = true;
-            input.accept = 'image/*,video/*,.mp4,.mov,.webm,.m4v,.heic,.HEIC';
-            input.style.display = 'none';
-
-            input.onchange = async (e: any) => {
-                const fileList: FileList = e.target.files;
-                if (fileList && fileList.length > 0) {
-                    await executeAppendFilesToMemory(targetItem, Array.from(fileList));
-                }
-                input.remove();
-            };
-
-            document.body.appendChild(input);
-            input.click();
-        }
-    };
-
-    const processUploadedFiles = async (files: File[]) => {
-        if (!files || files.length === 0) return;
-
-        let imageFiles = files.filter(
-            (f) =>
-                f.type.startsWith('image/') ||
-                f.name.toLowerCase().endsWith('.heic') ||
-                f.name.toLowerCase().endsWith('.heif'),
-        );
-        const videoFiles = files.filter(
-            (f) =>
-                f.type.startsWith('video/') ||
-                f.name.toLowerCase().endsWith('.mp4') ||
-                f.name.toLowerCase().endsWith('.mov') ||
-                f.name.toLowerCase().endsWith('.m4v') ||
-                f.name.toLowerCase().endsWith('.webm'),
-        );
-        const audioFiles = files.filter(
-            (f) =>
-                f.type.startsWith('audio/') ||
-                f.name.toLowerCase().endsWith('.m4a') ||
-                f.name.toLowerCase().endsWith('.mp3'),
-        );
-
-        if (imageFiles.length === 0 && videoFiles.length === 0) {
-            alert('최소 1개 이상의 사진 또는 동영상 파일을 선택해주세요.');
-            return;
-        }
-
-        setIsLoading(true);
-        setProgressPercent(5);
-
-        try {
-            let aiTargetImages: any[] = [...imageFiles];
-            if (videoFiles.length > 0) {
-                setLoadingText(`동영상(${videoFiles.length}개)에서 핵심 장면 추출 중...`);
-                for (let i = 0; i < videoFiles.length; i++) {
-                    const frames = await extractFramesFromVideo(videoFiles[i], 3);
-                    aiTargetImages = [...aiTargetImages, ...frames];
-                }
-            }
-
-            const allUploadFiles = [...imageFiles, ...videoFiles];
-
-            if (allUploadFiles.length > MAX_IMAGE_COUNT) {
-                alert(
-                    `⚠️ 사진 및 동영상 파일은 한 번에 최대 ${MAX_IMAGE_COUNT}개까지만 처리할 수 있습니다.\n(현재 총합: ${allUploadFiles.length}개)`,
-                );
-                setIsLoading(false);
-                return;
-            }
-
-            const totalCount = allUploadFiles.length;
-            setProgressPercent(15);
-            setLoadingText(`총 ${totalCount}개의 미디어 데이터 최적화 준비 중...`);
-
-            let targetSampledFiles = aiTargetImages;
-            const MAX_AI_INPUT_IMAGES = 28;
-
-            if (aiTargetImages.length > MAX_AI_INPUT_IMAGES) {
-                const step = aiTargetImages.length / MAX_AI_INPUT_IMAGES;
-                targetSampledFiles = [];
-                for (let i = 0; i < MAX_AI_INPUT_IMAGES; i++) {
-                    targetSampledFiles.push(aiTargetImages[Math.floor(i * step)]);
-                }
-            }
-
-            const loadedImages = [];
-            const sampleCount = targetSampledFiles.length;
-
-            for (let i = 0; i < sampleCount; i++) {
-                const compressed = await compressImageForAnalysis(targetSampledFiles[i]);
-                loadedImages.push(compressed);
-
-                const currentPct = Math.round(15 + ((i + 1) / sampleCount) * 40);
-                setProgressPercent(currentPct);
-                setLoadingText(`이미지 데이터 인코딩 중 (${i + 1} / ${sampleCount})`);
-            }
-
-            let audioData: { base64: string; mimeType: string; file: File } | undefined;
-            if (audioFiles.length > 0) {
-                setProgressPercent(60);
-                setLoadingText('음성 사연 데이터 추출 중...');
-                const firstAudio = audioFiles[0];
-                const audioDataUrl = await readFileAsDataURL(firstAudio);
-                audioData = {
-                    base64: audioDataUrl.split(',')[1],
-                    mimeType: firstAudio.type || 'audio/mp3',
-                    file: firstAudio,
-                };
-            }
-
-            setProgressPercent(65);
-            setLoadingText(`Gemini AI가 사진과 동영상 속 추억 흐름을 종합 분석 중...`);
-
-            const analysisResultPromise = analyzeMultiImageMemoryWithGemini(
-                loadedImages,
-                audioData?.base64,
-                audioData?.mimeType,
-            );
-
-            const intervalTimer = setInterval(() => {
-                setProgressPercent((prev) => (prev < 88 ? prev + 4 : prev));
-            }, 700);
-
-            const analysisResult = await analysisResultPromise;
-            clearInterval(intervalTimer);
-
-            setProgressPercent(90);
-            setLoadingText(`추억 앨범(${totalCount}개 미디어 전체) 저장 및 백업 동기화 중...`);
-
-            const id = `album_${Date.now()}`;
-            await addMultiImageMemoryToServer(id, allUploadFiles, analysisResult, audioData?.file);
-
-            setProgressPercent(100);
-            setLoadingText('분석 완료!');
-            await new Promise((res) => setTimeout(res, 250));
-        } catch (error: any) {
-            console.error(error);
-            alert(`분석 오류: ${error.message || '다시 시도해주세요.'}`);
-        } finally {
-            setIsLoading(false);
-            setLoadingText('');
-            setProgressPercent(0);
-            setIsDragging(false);
-        }
-    };
-
-    const handleSelectFiles = () => {
-        if (Platform.OS === 'web') {
-            const existingInput = document.getElementById('memory-file-input');
-            if (existingInput) existingInput.remove();
-
-            const input = document.createElement('input');
-            input.id = 'memory-file-input';
-            input.type = 'file';
-            input.multiple = true;
-            input.accept = 'image/*,video/*,audio/*,.mp3,.m4a,.wav,.aac,.ogg,.heic,.HEIC,.mp4,.mov,.webm,.m4v';
-            input.style.display = 'none';
-
-            input.onchange = async (e: any) => {
-                const fileList: FileList = e.target.files;
-                if (fileList && fileList.length > 0) {
-                    await processUploadedFiles(Array.from(fileList));
-                }
-                input.remove();
-            };
-
-            document.body.appendChild(input);
-            input.click();
-        }
-    };
-
-    useEffect(() => {
-        if (Platform.OS !== 'web') return;
-
-        const handleGlobalDrag = (e: DragEvent) => {
-            e.preventDefault();
-            e.stopPropagation();
-        };
-
-        window.addEventListener('dragover', handleGlobalDrag);
-        window.addEventListener('drop', handleGlobalDrag);
-
-        const domElement = dropAreaRef.current;
-        if (!domElement) return;
-
-        const handleDragEnter = (e: DragEvent) => {
-            e.preventDefault();
-            e.stopPropagation();
-            setIsDragging(true);
-        };
-
-        const handleDragOver = (e: DragEvent) => {
-            e.preventDefault();
-            e.stopPropagation();
-            if (!isDragging) setIsDragging(true);
-        };
-
-        const handleDragLeave = (e: DragEvent) => {
-            e.preventDefault();
-            e.stopPropagation();
-            if (e.currentTarget === e.target || (e.relatedTarget && !domElement.contains(e.relatedTarget as Node))) {
-                setIsDragging(false);
-            }
-        };
-
-        const handleDrop = async (e: DragEvent) => {
-            e.preventDefault();
-            e.stopPropagation();
-            setIsDragging(false);
-
-            if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-                const droppedFiles = Array.from(e.dataTransfer.files);
-                await processUploadedFiles(droppedFiles);
-            }
-        };
-
-        domElement.addEventListener('dragenter', handleDragEnter);
-        domElement.addEventListener('dragover', handleDragOver);
-        domElement.addEventListener('dragleave', handleDragLeave);
-        domElement.addEventListener('drop', handleDrop);
-
-        return () => {
-            window.removeEventListener('dragover', handleGlobalDrag);
-            window.removeEventListener('drop', handleGlobalDrag);
-            domElement.removeEventListener('dragenter', handleDragEnter);
-            domElement.removeEventListener('dragover', handleDragOver);
-            domElement.removeEventListener('dragleave', handleDragLeave);
-            domElement.removeEventListener('drop', handleDrop);
-        };
-    }, []);
-
-    const handleRefineMemory = async (item: MemoryItem) => {
-        const note = userNotes[item.id]?.trim();
-        if (!note) {
-            alert('추가할 실제 기억이나 수정하고 싶은 내용을 입력해주세요.');
-            return;
-        }
-
-        if (!item.analysis) return;
-
-        setRefiningMap((prev) => ({ ...prev, [item.id]: true }));
-        try {
-            const currentDraft = {
-                title: item.analysis.title || '',
-                location: item.analysis.location || '',
-                yearEstimate: item.analysis.yearEstimate || '',
-                description: item.analysis.description || '',
-                storyCaption: item.analysis.storyCaption || '',
-                audioTranscriptSummary: item.analysis.audioTranscriptSummary || '',
-            };
-            const refinedResult = await refineMemoryWithGemini(currentDraft, note, item.imageUrls);
-            await updateMemoryItem(item.id, refinedResult);
-            setUserNotes((prev) => ({ ...prev, [item.id]: '' }));
-        } catch (e: any) {
-            alert(`노트 재분석 오류: ${e.message || '오류가 발생했습니다.'}`);
-        } finally {
-            setRefiningMap((prev) => ({ ...prev, [item.id]: false }));
-        }
-    };
-
-    const handleClearActiveMemories = async () => {
-        const confirmed =
+    const handleBatchRemoveFromHome = () => {
+        if (selectedAlbumIds.size === 0) return;
+        const count = selectedAlbumIds.size;
+        const ok =
             Platform.OS === 'web'
-                ? window.confirm('현재 작업 화면의 목록을 비우시겠습니까?\n(※ 보관함 파일은 안전하게 보존됩니다.)')
+                ? window.confirm(
+                      `선택한 ${count}개의 앨범을 홈 작업 목록에서 없애시겠습니까?\n(추억 보관함에는 안전하게 보존됩니다.)`,
+                  )
                 : true;
+        if (!ok) return;
 
-        if (confirmed) {
-            await clearAllMemories();
-            setSelectedCardIds(new Set());
-        }
+        selectedAlbumIds.forEach((id) => {
+            deleteMemoryItem(id);
+        });
+        setSelectedAlbumIds(new Set());
+        Alert.alert('완료', `${count}개의 앨범이 홈 화면에서 정리되었습니다.`);
     };
 
-    const isAllSelected = memoryList.length > 0 && memoryList.every((item) => selectedCardIds.has(item.id));
+    const isAllSelected = memoryList.length > 0 && memoryList.every((item) => selectedAlbumIds.has(item.id));
 
     return (
-        <ScrollView style={styles.container} contentContainerStyle={styles.contentContainer}>
-            <View style={styles.header}>
-                <Text style={styles.logoText}>Memory-Tracer</Text>
-            </View>
-
-            <View style={styles.heroSection}>
-                <View ref={dropAreaRef} style={styles.dropZoneContainer}>
-                    <View style={[styles.dropZoneBorder, isDragging && styles.dropZoneBorderActive]}>
-                        <Text style={styles.dropZoneTitle}>
-                            {isDragging
-                                ? '📂 사진, 동영상, 음성을 여기에 놓으세요!'
-                                : '여러 장의 사진/동영상과 음성으로 하나의 추억 앨범을 만들어보세요'}
-                        </Text>
-                        <Text style={styles.dropZoneSubtitle}>
-                            {isDragging
-                                ? '마우스를 놓으면 자동으로 통합 멀티모달 분석이 시작됩니다.'
-                                : '파일을 직접 끌어다 놓거나 선택해주세요. (완성된 개별 카드 위로도 직접 드래그 드롭 가능)'}
-                        </Text>
-
-                        <View style={styles.fileIconWrapper}>
-                            <Text style={styles.fileIcon}>{isDragging ? '📥' : '📸 🎬 🎙️'}</Text>
-                        </View>
-
-                        <TouchableOpacity
-                            style={[styles.selectButton, isLoading && { opacity: 0.7 }]}
-                            onPress={handleSelectFiles}
-                            disabled={isLoading}
-                        >
-                            <Text style={styles.selectButtonText}>
-                                {isLoading ? 'Analyzing the Data' : 'Insert the Data'}
-                            </Text>
-                        </TouchableOpacity>
-                    </View>
-                </View>
-            </View>
-
-            {/* 프로그레스 바 UI */}
-            {isLoading && (
-                <View style={styles.progressContainer}>
-                    <View style={styles.progressCard}>
-                        <View style={styles.progressHeaderRow}>
-                            <Text style={styles.progressStatusText}>{loadingText}</Text>
-                            <Text style={styles.progressPercentText}>{`${progressPercent}%`}</Text>
-                        </View>
-                        <View style={styles.progressBarTrack}>
-                            <View style={[styles.progressBarFill, { width: `${progressPercent}%` }]} />
-                        </View>
-                        <View style={styles.progressFooterRow}>
-                            <ActivityIndicator size="small" color="#F5933C" />
-                            <Text style={styles.progressSubHint}>사진 및 영상 속 단서를 정밀 추론하고 있습니다...</Text>
-                        </View>
-                    </View>
-                </View>
+        <View style={styles.container}>
+            {Platform.OS === 'web' && (
+                <>
+                    <input
+                        type="file"
+                        ref={imageInputRef}
+                        style={{ display: 'none' }}
+                        multiple
+                        accept="image/*"
+                        onChange={handleWebImageChange}
+                    />
+                    <input
+                        type="file"
+                        ref={audioInputRef}
+                        style={{ display: 'none' }}
+                        accept="audio/*"
+                        onChange={handleWebAudioChange}
+                    />
+                </>
             )}
 
-            {memoryList.length > 0 && !isLoading && (
-                <View style={styles.resultSection}>
-                    <View style={styles.resultHeaderRow}>
-                        <View>
-                            <Text style={styles.resultSectionTitle}>
-                                {`✨ 완성된 추억 앨범 (${memoryList.length}개)`}
-                            </Text>
-                            <Text style={styles.resultSectionSubtitle}>
-                                각 카드 위로 사진을 드래그 앤 드롭하여 바로 추가하거나, 체크박스로 노트를 내보낼 수
-                                있습니다.
-                            </Text>
-                        </View>
+            {/* 헤더 */}
+            <View style={styles.header}>
+                <Text style={styles.headerTitle}>Reminiscence Note</Text>
+                <Text style={styles.headerSubtitle}>
+                    사진만 등록하면 AI가 유년시절과 여행을 스스로 감지하여 맞춤 기록합니다.
+                </Text>
+            </View>
 
-                        <View style={styles.headerBtnGroup}>
-                            <TouchableOpacity style={styles.selectAllBtn} onPress={handleToggleSelectAll}>
-                                <Text style={styles.selectAllBtnText}>
-                                    {isAllSelected ? '선택 해제 ✕' : '전체 선택 ✓'}
-                                </Text>
-                            </TouchableOpacity>
-
-                            {selectedCardIds.size > 0 && (
-                                <>
-                                    <TouchableOpacity
-                                        style={styles.batchGenerateBtn}
-                                        onPress={handleSendSelectedToGenerate}
-                                    >
-                                        <Text style={styles.batchGenerateBtnText}>
-                                            {`📖 선택 노트 내보내기 (${selectedCardIds.size}개) →`}
-                                        </Text>
-                                    </TouchableOpacity>
-
-                                    <TouchableOpacity
-                                        style={styles.batchDeleteFromIndexBtn}
-                                        onPress={handleBatchDeleteFromIndex}
-                                    >
-                                        <Text style={styles.batchDeleteFromIndexBtnText}>
-                                            {`🗑️ 선택 제외 (${selectedCardIds.size}개)`}
-                                        </Text>
-                                    </TouchableOpacity>
-                                </>
-                            )}
-
-                            <TouchableOpacity style={styles.clearListBtn} onPress={handleClearActiveMemories}>
-                                <Text style={styles.clearListBtnText}>🧹 목록 비우기</Text>
-                            </TouchableOpacity>
-                        </View>
+            <ScrollView contentContainerStyle={styles.scrollContent}>
+                {/* 🌟 기존 DroppableAlbumCard를 그대로 활용하여 드래그 앤 드롭 완벽 지원 */}
+                <DroppableAlbumCard
+                    item={{ id: 'new_upload_card', fileNames: [], imageUrls: [] }}
+                    onDropFiles={handleDropFilesOnNewUploadCard}
+                >
+                    <View style={styles.cardHeaderRow}>
+                        <Text style={styles.cardTitle}>새 추억 사진 등록</Text>
+                        <Text style={styles.cardHeaderHint}>
+                            💡 사진 파일을 이 영역에 직접 끌어다 놓아도 바로 등록됩니다.
+                        </Text>
                     </View>
 
-                    <View style={styles.resultList}>
-                        {memoryList.map((item, idx) => {
-                            const isRefining = refiningMap[item.id] || false;
-                            const isSelected = selectedCardIds.has(item.id);
+                    {/* 넓어진 드롭존 영역 */}
+                    <View style={styles.largeDropZone}>
+                        {selectedImages.length === 0 ? (
+                            <TouchableOpacity
+                                activeOpacity={0.8}
+                                style={styles.dropZoneEmptyClickable}
+                                onPress={handlePickImages}
+                            >
+                                <Text style={styles.dropZoneIcon}>📥</Text>
+                                <Text style={styles.dropZonePrimaryText}>
+                                    사진을 이곳에 끌어다 놓거나 클릭하여 선택하세요
+                                </Text>
+                                <Text style={styles.dropZoneSubText}>JPG, PNG, WEBP 등 다중 사진 드래그 지원</Text>
+                            </TouchableOpacity>
+                        ) : (
+                            <View style={styles.previewGridContainer}>
+                                {selectedImages.map((img, idx) => (
+                                    <View key={idx} style={styles.previewGridItem}>
+                                        <Image source={{ uri: img.uri }} style={styles.previewGridImage} />
+                                        <TouchableOpacity
+                                            style={styles.removeBadge}
+                                            onPress={() =>
+                                                setSelectedImages((prev) => prev.filter((_, i) => i !== idx))
+                                            }
+                                        >
+                                            <Text style={styles.removeBadgeText}>✕</Text>
+                                        </TouchableOpacity>
+                                    </View>
+                                ))}
+                                <TouchableOpacity style={styles.addMoreGridBtn} onPress={handlePickImages}>
+                                    <Text style={styles.addMoreGridIcon}>＋</Text>
+                                    <Text style={styles.addMoreGridText}>사진 추가</Text>
+                                </TouchableOpacity>
+                            </View>
+                        )}
+                    </View>
 
-                            return (
-                                <DroppableAlbumCard
-                                    key={item.id}
-                                    item={item}
-                                    isSelected={isSelected}
-                                    onDropFiles={(droppedItem, droppedFiles) =>
-                                        executeAppendFilesToMemory(droppedItem, droppedFiles)
-                                    }
+                    {/* 음성 첨부 */}
+                    <View style={styles.optionRow}>
+                        {selectedAudio ? (
+                            <View style={styles.audioChip}>
+                                <Text style={styles.audioChipText}>🎤 {selectedAudio.name}</Text>
+                                <TouchableOpacity onPress={() => setSelectedAudio(null)}>
+                                    <Text style={styles.audioRemoveText}>✕</Text>
+                                </TouchableOpacity>
+                            </View>
+                        ) : (
+                            <TouchableOpacity style={styles.audioAddBtn} onPress={handlePickAudio}>
+                                <Text style={styles.audioAddBtnText}>🎤 음성 녹음/파일 첨부 (선택)</Text>
+                            </TouchableOpacity>
+                        )}
+                    </View>
+
+                    {/* 보관 폴더 */}
+                    <View style={styles.folderRow}>
+                        <Text style={styles.folderLabel}>폴더:</Text>
+                        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                            {folderList.map((f) => (
+                                <TouchableOpacity
+                                    key={f}
+                                    style={[styles.folderChip, selectedFolder === f && styles.folderChipActive]}
+                                    onPress={() => setSelectedFolder(f)}
                                 >
-                                    <TouchableOpacity
-                                        style={[styles.cardCheckbox, isSelected && styles.cardCheckboxActive]}
-                                        onPress={() => toggleSelectCard(item.id)}
+                                    <Text
+                                        style={[
+                                            styles.folderChipText,
+                                            selectedFolder === f && styles.folderChipTextActive,
+                                        ]}
                                     >
-                                        <Text style={[styles.cardCheckmark, isSelected && styles.cardCheckmarkActive]}>
-                                            {isSelected ? '✓' : ''}
+                                        📁 {f}
+                                    </Text>
+                                </TouchableOpacity>
+                            ))}
+                        </ScrollView>
+                    </View>
+
+                    {/* 분석 시작 버튼 */}
+                    <TouchableOpacity
+                        style={[
+                            styles.actionSubmitBtn,
+                            (isProcessing || selectedImages.length === 0) && styles.actionSubmitBtnDisabled,
+                        ]}
+                        onPress={handleStartProcess}
+                        disabled={isProcessing || selectedImages.length === 0}
+                    >
+                        {isProcessing ? (
+                            <View style={styles.loadingRow}>
+                                <ActivityIndicator color="#fff" size="small" />
+                                <Text style={styles.actionSubmitBtnText}>{statusMessage || '분석 중...'}</Text>
+                            </View>
+                        ) : (
+                            <Text style={styles.actionSubmitBtnText}>
+                                {selectedImages.length > 0
+                                    ? `✨ ${selectedImages.length}장의 사진으로 추억 분석 시작`
+                                    : '✨ 추억 분석 및 복원 시작'}
+                            </Text>
+                        )}
+                    </TouchableOpacity>
+                </DroppableAlbumCard>
+
+                {/* 현재 작업 중인 앨범 카드 목록 섹션 */}
+                <View style={styles.albumSection}>
+                    <View style={styles.sectionHeaderRow}>
+                        <Text style={styles.sectionTitle}>현재 작업 목록 ({memoryList.length})</Text>
+
+                        {memoryList.length > 0 && (
+                            <View style={styles.toolbarGroup}>
+                                <TouchableOpacity
+                                    style={styles.selectToggleBtn}
+                                    onPress={() => {
+                                        if (isAllSelected) setSelectedAlbumIds(new Set());
+                                        else setSelectedAlbumIds(new Set(memoryList.map((m) => m.id)));
+                                    }}
+                                >
+                                    <Text style={styles.selectToggleBtnText}>
+                                        {isAllSelected ? '전체 해제' : '전체 선택'}
+                                    </Text>
+                                </TouchableOpacity>
+
+                                {selectedAlbumIds.size > 0 && (
+                                    <TouchableOpacity style={styles.batchRemoveBtn} onPress={handleBatchRemoveFromHome}>
+                                        <Text style={styles.batchRemoveBtnText}>
+                                            {`✕ 홈에서 없애기 (${selectedAlbumIds.size})`}
                                         </Text>
                                     </TouchableOpacity>
+                                )}
+                            </View>
+                        )}
+                    </View>
 
-                                    <TouchableOpacity
-                                        style={styles.deleteCardBtn}
-                                        onPress={() => deleteMemoryItem(item.id)}
-                                        accessibilityLabel="목록에서 제외"
+                    {memoryList.length === 0 ? (
+                        <View style={styles.emptyBox}>
+                            <Text style={styles.emptyText}>현재 작업 중인 추억 앨범이 없습니다.</Text>
+                            <Text style={[styles.emptyText, { fontSize: 11, marginTop: 4, color: '#94a3b8' }]}>
+                                새 사진을 등록하거나 보관함 탭에서 앨범을 복원해보세요.
+                            </Text>
+                        </View>
+                    ) : (
+                        memoryList.map((item) => {
+                            const isSelected = selectedAlbumIds.has(item.id);
+
+                            return (
+                                <View key={item.id} style={styles.albumItemOuter}>
+                                    <DroppableAlbumCard
+                                        item={item}
+                                        isSelected={selectedEnhanceMemory?.id === item.id}
+                                        onDropFiles={handleDropFilesOnAlbum}
                                     >
-                                        <Text style={styles.deleteCardBtnText}>✕</Text>
-                                    </TouchableOpacity>
-
-                                    <View style={styles.imageColumn}>
-                                        <MouseDragHorizontalScroll
-                                            contentContainerStyle={styles.multiImageScroll}
-                                            style={{ paddingVertical: 4 }}
-                                        >
-                                            {item.imageUrls.slice(0, 12).map((mediaUrl, imgIdx) => {
-                                                const isVid = isVideoUrl(mediaUrl);
-                                                return (
-                                                    <TouchableOpacity
-                                                        key={imgIdx}
-                                                        activeOpacity={0.85}
-                                                        onPress={() => {
-                                                            setGalleryItem(item);
-                                                            setGalleryInitialIdx(imgIdx);
-                                                        }}
-                                                        style={{ position: 'relative' }}
-                                                    >
-                                                        {isVid && Platform.OS === 'web' ? (
-                                                            <div
-                                                                style={{
-                                                                    position: 'relative',
-                                                                    width: 180,
-                                                                    height: 130,
-                                                                }}
-                                                            >
-                                                                <video
-                                                                    src={mediaUrl}
-                                                                    style={{
-                                                                        width: 180,
-                                                                        height: 130,
-                                                                        borderRadius: 8,
-                                                                        objectFit: 'cover',
-                                                                        backgroundColor: '#000',
-                                                                    }}
-                                                                    muted
-                                                                />
-                                                                <div
-                                                                    style={{
-                                                                        position: 'absolute',
-                                                                        inset: 0,
-                                                                        display: 'flex',
-                                                                        alignItems: 'center',
-                                                                        justifyContent: 'center',
-                                                                        backgroundColor: 'rgba(0,0,0,0.35)',
-                                                                        borderRadius: 8,
-                                                                    }}
-                                                                >
-                                                                    <span style={{ fontSize: 28, color: '#FFF' }}>
-                                                                        ▶
-                                                                    </span>
-                                                                </div>
-                                                            </div>
-                                                        ) : (
-                                                            <Image
-                                                                source={{ uri: mediaUrl }}
-                                                                style={styles.previewImage}
-                                                                resizeMode="cover"
-                                                            />
-                                                        )}
-                                                    </TouchableOpacity>
-                                                );
-                                            })}
-
-                                            {item.imageUrls.length > 12 && (
+                                        <View style={styles.albumHeaderRow}>
+                                            <View style={styles.leftMetaGroup}>
                                                 <TouchableOpacity
-                                                    style={styles.morePhotoBadge}
-                                                    activeOpacity={0.8}
+                                                    style={[styles.checkbox, isSelected && styles.checkboxActive]}
                                                     onPress={() => {
-                                                        setGalleryItem(item);
-                                                        setGalleryInitialIdx(12);
+                                                        setSelectedAlbumIds((prev) => {
+                                                            const next = new Set(prev);
+                                                            if (next.has(item.id)) next.delete(item.id);
+                                                            else next.add(item.id);
+                                                            return next;
+                                                        });
                                                     }}
                                                 >
-                                                    <Text style={styles.morePhotoBadgeIcon}>🔍</Text>
-                                                    <Text style={styles.morePhotoBadgeText}>
-                                                        {`+${item.imageUrls.length - 12}개 더보기`}
-                                                    </Text>
-                                                    <Text style={styles.morePhotoSubText}>
-                                                        {`(전체 ${item.imageUrls.length}개)`}
+                                                    <Text
+                                                        style={[styles.checkmark, isSelected && styles.checkmarkActive]}
+                                                    >
+                                                        {isSelected ? '✓' : ''}
                                                     </Text>
                                                 </TouchableOpacity>
-                                            )}
-                                        </MouseDragHorizontalScroll>
 
-                                        <View style={styles.photoCountRow}>
-                                            <Text style={styles.fileNameText}>
-                                                {`🖼️ 총 ${item.imageUrls.length}개의 미디어 포함 (여기로 파일 드래그 드롭 가능)`}
-                                            </Text>
-                                            <TouchableOpacity
-                                                onPress={() => {
-                                                    setGalleryItem(item);
-                                                    setGalleryInitialIdx(0);
-                                                }}
-                                            >
-                                                <Text style={styles.viewAllPhotosLinkText}>전체 갤러리 열기 ↗</Text>
-                                            </TouchableOpacity>
-                                        </View>
+                                                <View style={styles.badgeGroup}>
+                                                    <Text
+                                                        style={[
+                                                            styles.modeBadge,
+                                                            item.mode === 'travel' && styles.modeBadgeTravel,
+                                                        ]}
+                                                    >
+                                                        {item.mode === 'travel' ? '✈️ 여행' : '🧸 유년시절'}
+                                                    </Text>
+                                                    <Text style={styles.categoryBadge}>
+                                                        {item.categoryFolder || '미분류'}
+                                                    </Text>
+                                                </View>
+                                            </View>
 
-                                        {item.audioFileName && (
-                                            <Text
-                                                style={styles.audioFileNameText}
-                                                numberOfLines={1}
-                                                ellipsizeMode="middle"
-                                            >
-                                                {`🎙️ ${item.audioFileName}`}
-                                            </Text>
-                                        )}
-                                    </View>
-
-                                    <View style={styles.resultInfo}>
-                                        <View style={styles.cardHeaderRow}>
-                                            <Text style={styles.noteTitle}>
-                                                {`${idx + 1}. ${item.analysis?.title || '종합 분석 완료'}`}
-                                            </Text>
-                                            <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
+                                            <View style={styles.cardActions}>
                                                 <TouchableOpacity
-                                                    style={styles.addMediaBtn}
-                                                    onPress={() => handleAppendMediaToMemory(item)}
+                                                    style={[styles.miniBtn, styles.galleryBtn]}
+                                                    onPress={() => setViewingGalleryAlbum(item)}
                                                 >
-                                                    <Text style={styles.addMediaBtnText}>➕ 미디어 추가</Text>
+                                                    <Text style={styles.galleryBtnText}>🖼️ 사진 관리</Text>
                                                 </TouchableOpacity>
+
                                                 <TouchableOpacity
-                                                    style={styles.editOpenBtn}
-                                                    onPress={() => setEditingItem(item)}
+                                                    style={[styles.miniBtn, styles.editDetailBtn]}
+                                                    onPress={() => setEditingAlbum(item)}
                                                 >
-                                                    <Text style={styles.editOpenBtnText}>✏️ 상세 편집</Text>
+                                                    <Text style={styles.editDetailBtnText}>✏️ 상세 편집</Text>
+                                                </TouchableOpacity>
+
+                                                <TouchableOpacity
+                                                    style={[styles.miniBtn, styles.interviewBtn]}
+                                                    onPress={() => handleOpenInterviewForExistingAlbum(item)}
+                                                >
+                                                    <Text style={styles.interviewBtnText}>💬 인터뷰 수정/재분석</Text>
+                                                </TouchableOpacity>
+
+                                                <TouchableOpacity
+                                                    style={styles.miniBtn}
+                                                    onPress={() => {
+                                                        setSelectedEnhanceMemory(item);
+                                                        router.push('/(tabs)/enhance');
+                                                    }}
+                                                >
+                                                    <Text style={styles.miniBtnText}>🎨 화질 복원</Text>
+                                                </TouchableOpacity>
+
+                                                <TouchableOpacity
+                                                    style={[styles.miniBtn, styles.deleteBtn]}
+                                                    onPress={() =>
+                                                        handleRemoveSingleFromHome(
+                                                            item.id,
+                                                            item.curatedNote?.title || item.analysis?.title,
+                                                        )
+                                                    }
+                                                >
+                                                    <Text style={[styles.miniBtnText, { color: '#ef4444' }]}>
+                                                        ✕ 홈에서 없애기
+                                                    </Text>
                                                 </TouchableOpacity>
                                             </View>
                                         </View>
 
-                                        {item.analysis && (
-                                            <>
-                                                <View style={styles.tagRow}>
-                                                    <Text style={styles.tag}>{`📍 ${item.analysis.location}`}</Text>
-                                                    <Text style={styles.tag}>{`⏳ ${item.analysis.yearEstimate}`}</Text>
-                                                </View>
+                                        <Text style={styles.albumTitle}>
+                                            {item.curatedNote?.title || item.analysis?.title || '추억의 순간'}
+                                        </Text>
 
-                                                {item.analysis.audioTranscriptSummary ? (
-                                                    <View style={styles.audioSummaryBox}>
-                                                        <Text style={styles.audioSummaryLabel}>🎙️ 음성 요약:</Text>
-                                                        <Text style={styles.audioSummaryText}>
-                                                            {item.analysis.audioTranscriptSummary}
-                                                        </Text>
-                                                    </View>
-                                                ) : null}
+                                        <ScrollView
+                                            horizontal
+                                            showsHorizontalScrollIndicator={false}
+                                            style={styles.thumbStrip}
+                                        >
+                                            {item.imageUrls?.map((url, i) => (
+                                                <TouchableOpacity
+                                                    key={i}
+                                                    activeOpacity={0.8}
+                                                    onPress={() => setViewingGalleryAlbum(item)}
+                                                >
+                                                    <Image source={{ uri: url }} style={styles.albumThumbImage} />
+                                                </TouchableOpacity>
+                                            ))}
+                                        </ScrollView>
 
-                                                <Text style={styles.label}>종합 상황 요약:</Text>
-                                                <Text style={styles.descText}>{item.analysis.description}</Text>
-
-                                                {item.analysis.storyCaption ? (
-                                                    <View style={styles.storyBox}>
-                                                        <Text style={styles.storyLabel}>📖 통합 추억 에세이:</Text>
-                                                        <Text style={styles.storyText}>
-                                                            {item.analysis.storyCaption}
-                                                        </Text>
-                                                    </View>
-                                                ) : null}
-
-                                                <View style={styles.refineSection}>
-                                                    <Text style={styles.refineLabel}>
-                                                        💡 AI에게 실제 기억 추가 전달하기 (예: "사실 2018년 여름 가족
-                                                        여행 때임")
-                                                    </Text>
-                                                    <View style={styles.refineInputRow}>
-                                                        <TextInput
-                                                            style={styles.refineInput}
-                                                            placeholder="추가할 기억이나 보완할 내용을 적어주세요..."
-                                                            placeholderTextColor="#A1A1AA"
-                                                            value={userNotes[item.id] || ''}
-                                                            onChangeText={(text) =>
-                                                                setUserNotes((prev) => ({ ...prev, [item.id]: text }))
-                                                            }
-                                                            editable={!isRefining}
-                                                        />
-                                                        <TouchableOpacity
-                                                            style={[styles.refineBtn, isRefining && { opacity: 0.6 }]}
-                                                            onPress={() => handleRefineMemory(item)}
-                                                            disabled={isRefining}
-                                                        >
-                                                            {isRefining ? (
-                                                                <ActivityIndicator size="small" color="#FFFFFF" />
-                                                            ) : (
-                                                                <Text style={styles.refineBtnText}>⚡ AI 재분석</Text>
-                                                            )}
-                                                        </TouchableOpacity>
-                                                    </View>
-                                                </View>
-
-                                                <View style={styles.sectionDivider} />
-
-                                                <View style={styles.actionButtonGroup}>
-                                                    <TouchableOpacity
-                                                        style={styles.enhanceActionBtn}
-                                                        onPress={() => {
-                                                            setSelectedEnhanceMemory(item);
-                                                            router.push('/(tabs)/enhance');
-                                                        }}
-                                                    >
-                                                        <Text style={styles.enhanceActionBtnText}>
-                                                            ✨ 사진 화질 개선 / 컬러 복원
-                                                        </Text>
-                                                    </TouchableOpacity>
-
-                                                    <TouchableOpacity
-                                                        style={styles.generateActionBtn}
-                                                        onPress={() => {
-                                                            addToGeneratedNotes(item);
-                                                            router.push('/(tabs)/generate');
-                                                        }}
-                                                    >
-                                                        <Text style={styles.generateActionBtnText}>
-                                                            ✍️ 완성된 추억 노트 보기
-                                                        </Text>
-                                                    </TouchableOpacity>
-                                                </View>
-                                            </>
-                                        )}
-                                    </View>
-                                </DroppableAlbumCard>
+                                        <Text style={styles.albumDesc} numberOfLines={3}>
+                                            {item.curatedNote
+                                                ? `[그날의 장면] ${item.curatedNote.sceneDescription}\n[나의 기억] ${item.curatedNote.remembered}`
+                                                : item.analysis?.description ||
+                                                  item.analysis?.storyCaption ||
+                                                  '내용 없음'}
+                                        </Text>
+                                    </DroppableAlbumCard>
+                                </View>
                             );
-                        })}
-                    </View>
+                        })
+                    )}
                 </View>
+            </ScrollView>
+
+            {/* 인터뷰 모달 */}
+            {interviewData && (
+                <MemoryInterviewModal
+                    visible={interviewModalVisible}
+                    onClose={() => {
+                        setInterviewModalVisible(false);
+                        setInterviewData(null);
+                        setActiveEditingMemory(null);
+                    }}
+                    factsAndClues={{
+                        estimatedEra: interviewData.estimatedEra,
+                        sceneFacts: interviewData.sceneFacts,
+                        visualClues: interviewData.visualClues,
+                    }}
+                    questions={interviewData.interviewQuestions}
+                    initialAnswers={initialAnswers}
+                    initialExtraStory={initialExtraStory}
+                    onComplete={handleInterviewComplete}
+                />
             )}
 
-            {/* 모달 */}
-            <GalleryViewerModal visible={!!galleryItem} album={galleryItem} onClose={() => setGalleryItem(null)} />
-            <EditMemoryModal
-                visible={!!editingItem}
-                album={editingItem}
-                onClose={() => setEditingItem(null)}
-                onSaveSuccess={() => setEditingItem(null)}
+            {/* 미디어 갤러리 조회 및 사진 삭제 모달 */}
+            <GalleryViewerModal
+                visible={viewingGalleryAlbum !== null}
+                album={viewingGalleryAlbum}
+                onClose={() => setViewingGalleryAlbum(null)}
             />
-        </ScrollView>
+
+            {/* 추억 정보 상세 편집 모달 */}
+            <EditMemoryModal
+                visible={editingAlbum !== null}
+                album={editingAlbum}
+                onClose={() => setEditingAlbum(null)}
+            />
+        </View>
     );
 }
 
 const styles = StyleSheet.create({
-    container: { flex: 1, backgroundColor: '#FFFFFF' },
-    contentContainer: { flexGrow: 1, paddingBottom: 60 },
+    container: { flex: 1, backgroundColor: '#f8fafc' },
     header: {
-        height: 64,
-        backgroundColor: '#FFFFFF',
-        justifyContent: 'center',
-        paddingHorizontal: 32,
+        paddingTop: 40,
+        paddingHorizontal: 20,
+        paddingBottom: 16,
+        backgroundColor: '#fff',
         borderBottomWidth: 1,
-        borderBottomColor: '#F0F0F0',
+        borderBottomColor: '#f1f5f9',
     },
-    logoText: { fontSize: 22, fontWeight: '700', color: '#1A1A1A' },
-    heroSection: {
-        backgroundColor: '#FDECC8',
-        paddingVertical: 48,
-        paddingHorizontal: 32,
-        alignItems: 'center',
-    },
-    dropZoneContainer: { width: '100%', maxWidth: 960 },
-    dropZoneBorder: {
+    headerTitle: { fontSize: 22, fontWeight: '800', color: '#0f172a' },
+    headerSubtitle: { fontSize: 13, color: '#64748b', marginTop: 4 },
+    scrollContent: { paddingHorizontal: 16, paddingBottom: 40, paddingTop: 16 },
+    cardHeaderRow: { marginBottom: 14 },
+    cardTitle: { fontSize: 16, fontWeight: '800', color: '#0f172a' },
+    cardHeaderHint: { fontSize: 12, color: '#64748b', marginTop: 4 },
+    largeDropZone: {
+        minHeight: 160,
         borderWidth: 2,
-        borderColor: '#D4C4A8',
+        borderColor: '#cbd5e1',
         borderStyle: 'dashed',
         borderRadius: 12,
-        paddingVertical: 48,
-        paddingHorizontal: 24,
+        backgroundColor: '#f8fafc',
+        padding: 16,
+        justifyContent: 'center',
         alignItems: 'center',
-        backgroundColor: 'transparent',
+        marginBottom: 16,
     },
-    dropZoneBorderActive: {
-        borderColor: '#F5933C',
-        backgroundColor: '#FCE7BD',
-    },
-    dropZoneTitle: {
-        fontSize: 22,
-        fontWeight: '600',
-        color: '#2D2D2D',
-        marginBottom: 6,
-        textAlign: 'center',
-    },
-    dropZoneSubtitle: { fontSize: 14, color: '#6B5E4C', marginBottom: 20, textAlign: 'center' },
-    fileIconWrapper: { marginBottom: 20 },
-    fileIcon: { fontSize: 36 },
-    selectButton: {
-        backgroundColor: '#F5933C',
-        paddingVertical: 12,
-        paddingHorizontal: 28,
-        borderRadius: 8,
-    },
-    selectButtonText: { color: '#FFFFFF', fontSize: 15, fontWeight: '600' },
-    progressContainer: {
-        alignItems: 'center',
-        paddingHorizontal: 24,
-        marginVertical: 28,
-    },
-    progressCard: {
+    dropZoneEmptyClickable: {
         width: '100%',
-        maxWidth: 600,
-        backgroundColor: '#FFFDF9',
-        borderRadius: 14,
-        borderWidth: 1.5,
-        borderColor: '#FBD38D',
-        padding: 20,
-        shadowColor: '#000',
-        shadowOpacity: 0.05,
-        shadowRadius: 8,
-        shadowOffset: { width: 0, height: 3 },
-    },
-    progressHeaderRow: {
-        flexDirection: 'row',
-        justifyContent: 'space-between',
         alignItems: 'center',
-        marginBottom: 10,
+        justifyContent: 'center',
+        paddingVertical: 24,
     },
-    progressStatusText: {
-        fontSize: 14,
-        fontWeight: '700',
-        color: '#2D3748',
-        flex: 1,
-        paddingRight: 10,
-    },
-    progressPercentText: {
-        fontSize: 16,
-        fontWeight: '800',
-        color: '#DD6B20',
-    },
-    progressBarTrack: {
-        width: '100%',
-        height: 10,
-        backgroundColor: '#EDF2F7',
-        borderRadius: 5,
-        overflow: 'hidden',
-        marginBottom: 12,
-    },
-    progressBarFill: {
-        height: '100%',
-        backgroundColor: '#F5933C',
-        borderRadius: 5,
-    },
-    progressFooterRow: {
+    dropZoneIcon: { fontSize: 36, marginBottom: 8 },
+    dropZonePrimaryText: { fontSize: 14, fontWeight: '700', color: '#334155', marginBottom: 4 },
+    dropZoneSubText: { fontSize: 12, color: '#94a3b8' },
+    previewGridContainer: {
         flexDirection: 'row',
-        alignItems: 'center',
-        gap: 8,
-    },
-    progressSubHint: {
-        fontSize: 12,
-        color: '#718096',
-    },
-    resultSection: { paddingHorizontal: 32, paddingTop: 32, alignItems: 'center' },
-    resultHeaderRow: {
-        maxWidth: 960,
-        width: '100%',
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        marginBottom: 20,
         flexWrap: 'wrap',
         gap: 12,
+        width: '100%',
     },
-    resultSectionTitle: { fontSize: 20, fontWeight: '700', color: '#1A1A1A' },
-    resultSectionSubtitle: { fontSize: 13, color: '#71717A', marginTop: 2 },
-    headerBtnGroup: { flexDirection: 'row', gap: 8, alignItems: 'center', flexWrap: 'wrap' },
-    selectAllBtn: {
-        paddingVertical: 8,
-        paddingHorizontal: 12,
-        backgroundColor: '#F4F4F5',
+    previewGridItem: {
+        width: 90,
+        height: 90,
+        borderRadius: 10,
+        position: 'relative',
         borderWidth: 1,
-        borderColor: '#E4E4E7',
-        borderRadius: 8,
+        borderColor: '#e2e8f0',
     },
-    selectAllBtnText: { fontSize: 13, color: '#3F3F46', fontWeight: '700' },
-    batchGenerateBtn: {
-        paddingVertical: 8,
-        paddingHorizontal: 14,
-        backgroundColor: '#F5933C',
-        borderRadius: 8,
-    },
-    batchGenerateBtnText: { fontSize: 13, color: '#FFFFFF', fontWeight: '700' },
-    batchDeleteFromIndexBtn: {
-        paddingVertical: 8,
-        paddingHorizontal: 14,
-        backgroundColor: '#FEE2E2',
-        borderWidth: 1,
-        borderColor: '#FCA5A5',
-        borderRadius: 8,
-    },
-    batchDeleteFromIndexBtnText: { fontSize: 13, color: '#DC2626', fontWeight: '700' },
-    clearListBtn: {
-        paddingVertical: 8,
-        paddingHorizontal: 12,
-        backgroundColor: '#F4F4F5',
-        borderWidth: 1,
-        borderColor: '#E4E4E7',
-        borderRadius: 8,
-    },
-    clearListBtnText: { fontSize: 13, color: '#52525B', fontWeight: '700' },
-    resultList: { width: '100%', maxWidth: 960, gap: 20 },
-    cardCheckbox: {
+    previewGridImage: { width: '100%', height: '100%', borderRadius: 10 },
+    removeBadge: {
         position: 'absolute',
-        top: 14,
-        left: 14,
-        width: 24,
-        height: 24,
-        borderRadius: 6,
-        backgroundColor: 'rgba(255, 255, 255, 0.95)',
+        top: -6,
+        right: -6,
+        backgroundColor: '#ef4444',
+        width: 22,
+        height: 22,
+        borderRadius: 11,
+        justifyContent: 'center',
+        alignItems: 'center',
+        zIndex: 10,
         borderWidth: 1.5,
-        borderColor: '#A1A1AA',
-        zIndex: 10,
+        borderColor: '#fff',
+    },
+    removeBadgeText: { color: '#fff', fontSize: 11, fontWeight: 'bold' },
+    addMoreGridBtn: {
+        width: 90,
+        height: 90,
+        borderRadius: 10,
+        borderWidth: 1.5,
+        borderColor: '#94a3b8',
+        borderStyle: 'dashed',
         justifyContent: 'center',
         alignItems: 'center',
+        backgroundColor: '#fff',
     },
-    cardCheckboxActive: {
-        backgroundColor: '#F5933C',
-        borderColor: '#F5933C',
-    },
-    cardCheckmark: { fontSize: 12, color: 'transparent', fontWeight: '800' },
-    cardCheckmarkActive: { color: '#FFFFFF' },
-    imageColumn: { width: '100%', gap: 8, paddingLeft: 30 },
-    multiImageScroll: { flexDirection: 'row', gap: 10 },
-    previewImage: { width: 180, height: 130, borderRadius: 8, backgroundColor: '#F4F4F5' },
-    morePhotoBadge: {
-        width: 120,
-        height: 130,
-        borderRadius: 8,
-        backgroundColor: '#26201B',
-        justifyContent: 'center',
+    addMoreGridIcon: { fontSize: 24, color: '#64748b' },
+    addMoreGridText: { fontSize: 11, color: '#64748b', fontWeight: '600', marginTop: 2 },
+    optionRow: { marginBottom: 12 },
+    audioChip: {
+        flexDirection: 'row',
         alignItems: 'center',
+        justifyContent: 'space-between',
+        backgroundColor: '#eff6ff',
         padding: 8,
-        gap: 4,
+        borderRadius: 8,
     },
-    morePhotoBadgeIcon: { fontSize: 18 },
-    morePhotoBadgeText: {
-        color: '#FFFFFF',
-        fontSize: 12,
-        fontWeight: '700',
-        textAlign: 'center',
+    audioChipText: { fontSize: 12, color: '#1d4ed8' },
+    audioRemoveText: { color: '#ef4444', fontWeight: 'bold', marginLeft: 8 },
+    audioAddBtn: { padding: 8, backgroundColor: '#f1f5f9', borderRadius: 8, alignItems: 'center' },
+    audioAddBtnText: { fontSize: 12, color: '#475569', fontWeight: '600' },
+    folderRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 16 },
+    folderLabel: { fontSize: 12, fontWeight: '600', color: '#475569', marginRight: 6 },
+    folderChip: {
+        paddingHorizontal: 10,
+        paddingVertical: 5,
+        borderRadius: 12,
+        backgroundColor: '#f1f5f9',
+        marginRight: 6,
     },
-    morePhotoSubText: {
-        color: '#FBD38D',
-        fontSize: 10,
-        fontWeight: '600',
-    },
-    photoCountRow: {
+    folderChipActive: { backgroundColor: '#0284c7' },
+    folderChipText: { fontSize: 12, color: '#475569' },
+    folderChipTextActive: { color: '#ffffff', fontWeight: '600' },
+    actionSubmitBtn: { backgroundColor: '#0284c7', paddingVertical: 14, borderRadius: 10, alignItems: 'center' },
+    actionSubmitBtnDisabled: { backgroundColor: '#94a3b8' },
+    actionSubmitBtnText: { color: '#fff', fontWeight: '700', fontSize: 14 },
+    loadingRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+    albumSection: { marginTop: 8 },
+    sectionHeaderRow: {
         flexDirection: 'row',
         justifyContent: 'space-between',
         alignItems: 'center',
-        paddingRight: 10,
-        marginTop: 4,
-    },
-    viewAllPhotosLinkText: {
-        fontSize: 12,
-        color: '#F5933C',
-        fontWeight: '700',
-        textDecorationLine: 'underline',
-    },
-    fileNameText: { fontSize: 12, color: '#71717A', fontWeight: '600' },
-    audioFileNameText: { fontSize: 12, color: '#2563EB', fontWeight: '600' },
-    deleteCardBtn: {
-        position: 'absolute',
-        top: 14,
-        right: 14,
-        width: 28,
-        height: 28,
-        borderRadius: 14,
-        backgroundColor: '#F4F4F5',
-        alignItems: 'center',
-        justifyContent: 'center',
-        zIndex: 10,
-    },
-    deleteCardBtnText: { fontSize: 14, color: '#71717A', fontWeight: '700', lineHeight: 16 },
-    resultInfo: { width: '100%' },
-    cardHeaderRow: {
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        marginBottom: 8,
-        paddingRight: 32,
+        marginBottom: 12,
         flexWrap: 'wrap',
         gap: 8,
     },
-    noteTitle: { fontSize: 20, fontWeight: '700', color: '#18181B', flex: 1 },
-    addMediaBtn: {
-        backgroundColor: '#F0FDF4',
+    sectionTitle: { fontSize: 17, fontWeight: '700', color: '#0f172a' },
+    toolbarGroup: { flexDirection: 'row', gap: 8, alignItems: 'center' },
+    selectToggleBtn: {
+        backgroundColor: '#f1f5f9',
         borderWidth: 1,
-        borderColor: '#86EFAC',
+        borderColor: '#cbd5e1',
+        paddingVertical: 5,
         paddingHorizontal: 10,
-        paddingVertical: 6,
         borderRadius: 6,
     },
-    addMediaBtnText: { fontSize: 12, fontWeight: '700', color: '#15803D' },
-    editOpenBtn: {
-        backgroundColor: '#F4F4F5',
+    selectToggleBtnText: { fontSize: 11, fontWeight: '700', color: '#475569' },
+    batchRemoveBtn: {
+        backgroundColor: '#fee2e2',
         borderWidth: 1,
-        borderColor: '#E4E4E7',
+        borderColor: '#fca5a5',
+        paddingVertical: 5,
         paddingHorizontal: 10,
-        paddingVertical: 6,
         borderRadius: 6,
     },
-    editOpenBtnText: { fontSize: 12, fontWeight: '700', color: '#18181B' },
-    tagRow: { flexDirection: 'row', gap: 8, marginBottom: 10 },
-    tag: {
-        backgroundColor: '#F4F4F5',
-        paddingHorizontal: 10,
-        paddingVertical: 4,
-        borderRadius: 6,
-        fontSize: 13,
-        color: '#52525B',
-    },
-    audioSummaryBox: {
-        backgroundColor: '#EFF6FF',
-        padding: 10,
-        borderRadius: 8,
-        marginBottom: 8,
-        borderLeftWidth: 3,
-        borderLeftColor: '#3B82F6',
-    },
-    audioSummaryLabel: { fontSize: 12, fontWeight: '700', color: '#1D4ED8', marginBottom: 2 },
-    audioSummaryText: { fontSize: 13, color: '#1E40AF', lineHeight: 18 },
-    label: { fontSize: 12, fontWeight: '600', color: '#71717A', marginBottom: 4 },
-    descText: { fontSize: 14, color: '#3F3F46', lineHeight: 20, marginBottom: 10 },
-    storyBox: {
-        backgroundColor: '#FAF5FF',
-        padding: 14,
-        borderRadius: 8,
-        borderLeftWidth: 3,
-        borderLeftColor: '#A855F7',
-        marginBottom: 12,
-    },
-    storyLabel: { fontSize: 13, fontWeight: '700', color: '#7E22CE', marginBottom: 4 },
-    storyText: { fontSize: 14, color: '#6B21A8', lineHeight: 22 },
-    refineSection: {
-        backgroundColor: '#F8FAFC',
-        padding: 12,
-        borderRadius: 8,
-        borderWidth: 1,
-        borderColor: '#E2E8F0',
-        marginTop: 6,
-        marginBottom: 8,
-    },
-    refineLabel: { fontSize: 12, fontWeight: '600', color: '#475569', marginBottom: 6 },
-    refineInputRow: { flexDirection: 'row', gap: 8 },
-    refineInput: {
-        flex: 1,
-        backgroundColor: '#FFFFFF',
-        borderWidth: 1,
-        borderColor: '#CBD5E1',
-        borderRadius: 6,
-        paddingHorizontal: 10,
-        paddingVertical: 6,
-        fontSize: 13,
-        color: '#1E293B',
-    },
-    refineBtn: {
-        backgroundColor: '#0F172A',
-        paddingHorizontal: 14,
-        paddingVertical: 8,
-        borderRadius: 6,
-        justifyContent: 'center',
+    batchRemoveBtnText: { fontSize: 11, fontWeight: '700', color: '#dc2626' },
+    emptyBox: {
+        backgroundColor: '#fff',
+        padding: 24,
+        borderRadius: 12,
         alignItems: 'center',
+        borderWidth: 1,
+        borderColor: '#e2e8f0',
     },
-    refineBtnText: { color: '#FFFFFF', fontSize: 12, fontWeight: '700' },
-    sectionDivider: { height: 1, backgroundColor: '#F0F0F0', marginVertical: 12 },
-    actionButtonGroup: { flexDirection: 'row', gap: 12, marginTop: 4 },
-    enhanceActionBtn: {
-        flex: 1,
-        backgroundColor: '#EEF2FF',
+    emptyText: { fontSize: 13, color: '#94a3b8' },
+    albumItemOuter: { marginBottom: 12 },
+    albumHeaderRow: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        marginBottom: 8,
+        flexWrap: 'wrap',
+        gap: 8,
+    },
+    leftMetaGroup: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+    checkbox: {
+        width: 20,
+        height: 20,
+        borderRadius: 4,
         borderWidth: 1.5,
-        borderColor: '#6366F1',
-        paddingVertical: 10,
-        borderRadius: 8,
+        borderColor: '#94a3b8',
+        backgroundColor: '#fff',
         alignItems: 'center',
         justifyContent: 'center',
     },
-    enhanceActionBtnText: { color: '#4F46E5', fontSize: 14, fontWeight: '700' },
-    generateActionBtn: {
-        flex: 1,
-        backgroundColor: '#F5933C',
-        paddingVertical: 10,
-        borderRadius: 8,
-        alignItems: 'center',
-        justifyContent: 'center',
+    checkboxActive: { backgroundColor: '#0284c7', borderColor: '#0284c7' },
+    checkmark: { fontSize: 11, color: 'transparent', fontWeight: 'bold' },
+    checkmarkActive: { color: '#fff' },
+    badgeGroup: { flexDirection: 'row', gap: 6 },
+    modeBadge: {
+        fontSize: 11,
+        fontWeight: '700',
+        color: '#9a3412',
+        backgroundColor: '#ffedd5',
+        paddingHorizontal: 6,
+        paddingVertical: 2,
+        borderRadius: 4,
     },
-    generateActionBtnText: { color: '#FFFFFF', fontSize: 14, fontWeight: '700' },
+    modeBadgeTravel: {
+        color: '#0369a1',
+        backgroundColor: '#e0f2fe',
+    },
+    categoryBadge: {
+        fontSize: 11,
+        color: '#475569',
+        backgroundColor: '#f1f5f9',
+        paddingHorizontal: 6,
+        paddingVertical: 2,
+        borderRadius: 4,
+    },
+    cardActions: { flexDirection: 'row', gap: 6, flexWrap: 'wrap' },
+    miniBtn: { paddingVertical: 5, paddingHorizontal: 9, borderRadius: 6, backgroundColor: '#f1f5f9' },
+    galleryBtn: { backgroundColor: '#f8fafc', borderWidth: 1, borderColor: '#cbd5e1' },
+    galleryBtnText: { fontSize: 11, color: '#334155', fontWeight: '700' },
+    editDetailBtn: { backgroundColor: '#f0f9ff', borderWidth: 1, borderColor: '#bae6fd' },
+    editDetailBtnText: { fontSize: 11, color: '#0284c7', fontWeight: '700' },
+    interviewBtn: { backgroundColor: '#eff6ff', borderWidth: 1, borderColor: '#bfdbfe' },
+    interviewBtnText: { fontSize: 11, color: '#1d4ed8', fontWeight: '700' },
+    deleteBtn: { backgroundColor: '#fef2f2' },
+    miniBtnText: { fontSize: 11, color: '#475569', fontWeight: '600' },
+    albumTitle: { fontSize: 16, fontWeight: '700', marginBottom: 8 },
+    thumbStrip: { flexDirection: 'row', marginBottom: 8 },
+    albumThumbImage: { width: 64, height: 64, borderRadius: 6, marginRight: 6, backgroundColor: '#e2e8f0' },
+    albumDesc: { fontSize: 13, color: '#64748b', lineHeight: 18 },
 });

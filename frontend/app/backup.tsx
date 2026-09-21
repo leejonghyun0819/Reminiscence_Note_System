@@ -1,4 +1,4 @@
-// frontend/app/backup.tsx
+// frontend/app/(tabs)/backup.tsx
 import React, { useState, useEffect } from 'react';
 import {
     StyleSheet,
@@ -10,6 +10,7 @@ import {
     Image,
     ActivityIndicator,
     TextInput,
+    Modal,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useMemory, AnalysisVersion } from '../context/MemoryContext';
@@ -21,12 +22,28 @@ import { isVideoUrl } from '../utils/mediaProcessUtils';
 
 const BACKEND_URL = 'http://localhost:8000';
 
+export interface ExtendedBackupAlbumMeta extends BackupAlbumMeta {
+    mode?: 'travel' | 'childhood';
+    rootCategory?: '유년시절' | '여행';
+    curatedNote?: any;
+    interviewData?: any;
+}
+
 export default function BackupPage({ onClose }: { onClose?: () => void }) {
     const router = useRouter();
     const { memoryList, appendActiveMemory, appendActiveMemories } = useMemory();
 
-    const [backupAlbums, setBackupAlbums] = useState<BackupAlbumMeta[]>([]);
+    // 대분류 상태: '여행' vs '유년시절'
+    const [activeRootCategory, setActiveRootCategory] = useState<'여행' | '유년시절'>('유년시절');
+
+    const [backupAlbums, setBackupAlbums] = useState<ExtendedBackupAlbumMeta[]>([]);
     const [folders, setFolders] = useState<string[]>([]);
+    const [categorizedFolders, setCategorizedFolders] = useState<{ [key: string]: string[] }>({
+        유년시절: [],
+        여행: [],
+        childhood: [],
+        travel: [],
+    });
     const [selectedFolderTab, setSelectedFolderTab] = useState<string>('전체');
     const [searchKeyword, setSearchKeyword] = useState<string>('');
 
@@ -35,11 +52,22 @@ export default function BackupPage({ onClose }: { onClose?: () => void }) {
 
     const [selectedAlbumIds, setSelectedAlbumIds] = useState<Set<string>>(new Set());
 
-    // 분리된 모달 상태들
-    const [viewingAlbum, setViewingAlbum] = useState<BackupAlbumMeta | null>(null);
+    // 모달 관리 상태
+    const [viewingAlbum, setViewingAlbum] = useState<ExtendedBackupAlbumMeta | null>(null);
     const [isFolderModalOpen, setIsFolderModalOpen] = useState<boolean>(false);
-    const [movingAlbum, setMovingAlbum] = useState<BackupAlbumMeta | null>(null);
+    const [movingAlbum, setMovingAlbum] = useState<ExtendedBackupAlbumMeta | null>(null);
     const [isBatchMovingOpen, setIsBatchMovingOpen] = useState<boolean>(false);
+
+    // 큰 폴더 이름 변경 모달 상태
+    const [renameFolderModalOpen, setRenameFolderModalOpen] = useState<boolean>(false);
+    const [targetFolderToRename, setTargetFolderToRename] = useState<string>('');
+    const [newFolderNameInput, setNewFolderNameInput] = useState<string>('');
+
+    // 개별 사진 파일명 관리 모달 상태
+    const [fileManagerAlbum, setFileManagerAlbum] = useState<ExtendedBackupAlbumMeta | null>(null);
+    const [editingTargetUrl, setEditingTargetUrl] = useState<string | null>(null);
+    const [newFileNameInput, setNewFileNameInput] = useState<string>('');
+    const [isRenamingFile, setIsRenamingFile] = useState<boolean>(false);
 
     const handleCloseOrBack = () => {
         if (onClose) onClose();
@@ -56,27 +84,22 @@ export default function BackupPage({ onClose }: { onClose?: () => void }) {
                 fetch(`${BACKEND_URL}/api/folders`),
             ]);
 
-            let loadedAlbums: BackupAlbumMeta[] = [];
             if (albumsRes.ok) {
-                loadedAlbums = await albumsRes.json();
+                const loadedAlbums: ExtendedBackupAlbumMeta[] = await albumsRes.json();
                 setBackupAlbums(loadedAlbums);
             } else {
                 setFetchError(true);
             }
 
-            let loadedFolders: string[] = [];
             if (foldersRes.ok) {
-                loadedFolders = await foldersRes.json();
-            }
-
-            const allFolderSet = new Set<string>(loadedFolders);
-            loadedAlbums.forEach((a) => {
-                if (a.categoryFolder && a.categoryFolder !== '미분류') {
-                    allFolderSet.add(a.categoryFolder);
+                const fData = await foldersRes.json();
+                if (fData.categorized) {
+                    setCategorizedFolders(fData.categorized);
+                    setFolders(fData.all || []);
+                } else if (Array.isArray(fData)) {
+                    setFolders(fData);
                 }
-            });
-
-            setFolders(Array.from(allFolderSet));
+            }
         } catch (e) {
             setFetchError(true);
         } finally {
@@ -95,7 +118,7 @@ export default function BackupPage({ onClose }: { onClose?: () => void }) {
             const res = await fetch(`${BACKEND_URL}/api/folders`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name }),
+                body: JSON.stringify({ name, rootCategory: activeRootCategory }),
             });
             if (res.ok) {
                 await fetchBackupData();
@@ -106,7 +129,51 @@ export default function BackupPage({ onClose }: { onClose?: () => void }) {
         }
     };
 
-    const handleDeleteFolder = async (folderName: string) => {
+    const handleOpenRenameFolder = (fName: string, e?: any) => {
+        if (e && e.stopPropagation) e.stopPropagation();
+        setTargetFolderToRename(fName);
+        setNewFolderNameInput(fName);
+        setRenameFolderModalOpen(true);
+    };
+
+    const handleConfirmRenameFolder = async () => {
+        if (!newFolderNameInput.trim()) {
+            alert('변경할 폴더명을 입력해주세요.');
+            return;
+        }
+
+        try {
+            setLoading(true);
+            const res = await fetch(`${BACKEND_URL}/api/folders/${encodeURIComponent(targetFolderToRename)}/rename`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    newName: newFolderNameInput.trim(),
+                    rootCategory: activeRootCategory,
+                }),
+            });
+
+            const data = await res.json();
+            if (!res.ok) {
+                throw new Error(data.detail || '폴더 이름 변경에 실패했습니다.');
+            }
+
+            alert(`✨ 폴더명이 '${data.newName}'(으)로 변경되었습니다!`);
+            setRenameFolderModalOpen(false);
+
+            if (selectedFolderTab === targetFolderToRename) {
+                setSelectedFolderTab(data.newName);
+            }
+            await fetchBackupData();
+        } catch (err: any) {
+            alert(err.message || '오류가 발생했습니다.');
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleDeleteFolder = async (folderName: string, e?: any) => {
+        if (e && e.stopPropagation) e.stopPropagation();
         const ok =
             Platform.OS === 'web'
                 ? window.confirm(
@@ -170,7 +237,7 @@ export default function BackupPage({ onClose }: { onClose?: () => void }) {
         }
     };
 
-    const isAlreadyInIndex = (backupAlbum: BackupAlbumMeta): boolean => {
+    const isAlreadyInIndex = (backupAlbum: ExtendedBackupAlbumMeta): boolean => {
         return memoryList.some((active) => {
             if (active.id === backupAlbum.id || active.id.includes(backupAlbum.id)) return true;
             if (
@@ -184,7 +251,7 @@ export default function BackupPage({ onClose }: { onClose?: () => void }) {
         });
     };
 
-    const handleRestoreSingle = async (album: BackupAlbumMeta) => {
+    const handleRestoreSingle = async (album: ExtendedBackupAlbumMeta) => {
         if (isAlreadyInIndex(album)) {
             alert('⚠️ 이미 현재 작업 화면(인덱스 목록)에 추가되어 있는 추억 앨범입니다.');
             return;
@@ -232,7 +299,7 @@ export default function BackupPage({ onClose }: { onClose?: () => void }) {
             });
 
             if (res.ok) {
-                const updatedAlbum = {
+                const updatedAlbum: ExtendedBackupAlbumMeta = {
                     ...viewingAlbum,
                     analysis: {
                         ...viewingAlbum.analysis,
@@ -342,7 +409,68 @@ export default function BackupPage({ onClose }: { onClose?: () => void }) {
         }
     };
 
+    const handleExecuteRenameFile = async (oldUrl: string) => {
+        if (!fileManagerAlbum || !newFileNameInput.trim()) {
+            alert('새로운 파일명을 입력해주세요.');
+            return;
+        }
+
+        const rawOldName = oldUrl.split('/').pop() || oldUrl;
+
+        setIsRenamingFile(true);
+        try {
+            const res = await fetch(`${BACKEND_URL}/api/backup-albums/${fileManagerAlbum.id}/rename-file`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    oldFileName: rawOldName,
+                    newFileName: newFileNameInput.trim(),
+                }),
+            });
+
+            const data = await res.json();
+            if (!res.ok) {
+                throw new Error(data.detail || '파일명 변경에 실패했습니다.');
+            }
+
+            alert(`✨ '${data.oldFileName}'이 '${data.newFileName}'으로 변경되었습니다!`);
+            setEditingTargetUrl(null);
+            setNewFileNameInput('');
+
+            await fetchBackupData();
+            setFileManagerAlbum((prev) => {
+                if (!prev) return null;
+                const updatedUrls = prev.imageUrls.map((u) =>
+                    u.includes(data.oldFileName) ? u.replace(data.oldFileName, data.newFileName) : u,
+                );
+                return { ...prev, imageUrls: updatedUrls };
+            });
+        } catch (err: any) {
+            alert(err.message || '오류가 발생했습니다.');
+        } finally {
+            setIsRenamingFile(false);
+        }
+    };
+
+    // 🌟 1. 백엔드의 한글/영문 키를 모두 고려한 서브 폴더 목록 매핑
+    const currentSubFolders =
+        activeRootCategory === '유년시절'
+            ? categorizedFolders['유년시절'] || categorizedFolders['childhood'] || []
+            : categorizedFolders['여행'] || categorizedFolders['travel'] || [];
+
+    // 🌟 2. 빈틈없는 대분류 판별 필터링 (mode, rootCategory, curatedNote, imageUrl 경로 모두 검사)
     const filteredAlbums = backupAlbums.filter((album) => {
+        const hasChildhoodFlag =
+            album.mode === 'childhood' ||
+            album.rootCategory === '유년시절' ||
+            Boolean(album.curatedNote) ||
+            Boolean(album.interviewData) ||
+            album.imageUrls?.some((u) => u.includes('/유년시절/') || u.includes('/childhood/'));
+
+        const albumRoot: '유년시절' | '여행' = hasChildhoodFlag ? '유년시절' : '여행';
+
+        if (albumRoot !== activeRootCategory) return false;
+
         const folderMatch =
             selectedFolderTab === '전체'
                 ? true
@@ -354,9 +482,9 @@ export default function BackupPage({ onClose }: { onClose?: () => void }) {
 
         if (!searchKeyword.trim()) return true;
         const kw = searchKeyword.toLowerCase();
-        const title = (album.analysis?.title || '').toLowerCase();
+        const title = (album.curatedNote?.title || album.analysis?.title || '').toLowerCase();
         const loc = (album.analysis?.location || '').toLowerCase();
-        const desc = (album.analysis?.description || '').toLowerCase();
+        const desc = (album.curatedNote?.sceneDescription || album.analysis?.description || '').toLowerCase();
         return title.includes(kw) || loc.includes(kw) || desc.includes(kw);
     });
 
@@ -365,11 +493,12 @@ export default function BackupPage({ onClose }: { onClose?: () => void }) {
     return (
         <View style={styles.pageContainer}>
             <View style={styles.modalCard}>
+                {/* 상단 헤더 */}
                 <View style={styles.headerRow}>
                     <View style={{ flex: 1 }}>
-                        <Text style={styles.title}>📦 추억 보관함 & 여행지별 폴더 관리</Text>
+                        <Text style={styles.title}>📦 추억 보관함 & 폴더 관리</Text>
                         <Text style={styles.subtitle}>
-                            오사카, 나고야 등 여행 일정별로 폴더를 생성하여 추억을 체계적으로 분류하고 관리해보세요.
+                            보관된 추억들을 [여행]과 [유년 시절]로 구분하여 체계적으로 보관하고 관리합니다.
                         </Text>
                     </View>
                     <TouchableOpacity style={styles.closeBtn} onPress={handleCloseOrBack}>
@@ -377,12 +506,50 @@ export default function BackupPage({ onClose }: { onClose?: () => void }) {
                     </TouchableOpacity>
                 </View>
 
+                {/* 대분류 전환 탭 */}
+                <View style={styles.rootCategoryBar}>
+                    <TouchableOpacity
+                        style={[styles.rootTabBtn, activeRootCategory === '유년시절' && styles.rootTabBtnActive]}
+                        onPress={() => {
+                            setActiveRootCategory('유년시절');
+                            setSelectedFolderTab('전체');
+                        }}
+                    >
+                        <Text
+                            style={[
+                                styles.rootTabBtnText,
+                                activeRootCategory === '유년시절' && styles.rootTabBtnTextActive,
+                            ]}
+                        >
+                            🧸 유년 시절 보관함
+                        </Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                        style={[styles.rootTabBtn, activeRootCategory === '여행' && styles.rootTabBtnActive]}
+                        onPress={() => {
+                            setActiveRootCategory('여행');
+                            setSelectedFolderTab('전체');
+                        }}
+                    >
+                        <Text
+                            style={[
+                                styles.rootTabBtnText,
+                                activeRootCategory === '여행' && styles.rootTabBtnTextActive,
+                            ]}
+                        >
+                            ✈️ 여행 보관함
+                        </Text>
+                    </TouchableOpacity>
+                </View>
+
+                {/* 검색창 & 새 폴더 만들기 */}
                 <View style={styles.folderActionBar}>
                     <View style={styles.searchBox}>
                         <Text style={{ fontSize: 14 }}>🔍</Text>
                         <TextInput
                             style={styles.searchInput}
-                            placeholder="제목, 여행지(오사카, 나고야 등), 사연 검색..."
+                            placeholder={`[${activeRootCategory}] 제목, 위치, 사연 검색...`}
                             placeholderTextColor="#94A3B8"
                             value={searchKeyword}
                             onChangeText={setSearchKeyword}
@@ -395,10 +562,11 @@ export default function BackupPage({ onClose }: { onClose?: () => void }) {
                     </View>
 
                     <TouchableOpacity style={styles.createFolderBtn} onPress={() => setIsFolderModalOpen(true)}>
-                        <Text style={styles.createFolderBtnText}>📁 새 폴더 만들기 +</Text>
+                        <Text style={styles.createFolderBtnText}>{`📁 새 ${activeRootCategory} 폴더 +`}</Text>
                     </TouchableOpacity>
                 </View>
 
+                {/* 폴더 탭 영역 */}
                 <View style={styles.folderTabWrapper}>
                     <MouseDragHorizontalScroll contentContainerStyle={{ gap: 8, paddingVertical: 4 }}>
                         <TouchableOpacity
@@ -411,7 +579,7 @@ export default function BackupPage({ onClose }: { onClose?: () => void }) {
                                     selectedFolderTab === '전체' && styles.folderTabTextActive,
                                 ]}
                             >
-                                {`🗂️ 전체 (${backupAlbums.length})`}
+                                {`🗂️ 전체 (${filteredAlbums.length})`}
                             </Text>
                         </TouchableOpacity>
 
@@ -425,33 +593,34 @@ export default function BackupPage({ onClose }: { onClose?: () => void }) {
                                     selectedFolderTab === '미분류' && styles.folderTabTextActive,
                                 ]}
                             >
-                                {`📄 미분류 (${backupAlbums.filter((a) => !a.categoryFolder || a.categoryFolder === '미분류').length})`}
+                                {`📄 미분류 (${filteredAlbums.filter((a) => !a.categoryFolder || a.categoryFolder === '미분류').length})`}
                             </Text>
                         </TouchableOpacity>
 
-                        {folders.map((fName) => {
-                            const count = backupAlbums.filter((a) => a.categoryFolder === fName).length;
+                        {currentSubFolders.map((fName) => {
+                            const count = filteredAlbums.filter((a) => a.categoryFolder === fName).length;
+                            const isActive = selectedFolderTab === fName;
                             return (
                                 <View key={fName} style={styles.customFolderTabContainer}>
                                     <TouchableOpacity
-                                        style={[
-                                            styles.folderTab,
-                                            selectedFolderTab === fName && styles.folderTabActive,
-                                        ]}
+                                        style={[styles.folderTab, isActive && styles.folderTabActive]}
                                         onPress={() => setSelectedFolderTab(fName)}
                                     >
-                                        <Text
-                                            style={[
-                                                styles.folderTabText,
-                                                selectedFolderTab === fName && styles.folderTabTextActive,
-                                            ]}
-                                        >
+                                        <Text style={[styles.folderTabText, isActive && styles.folderTabTextActive]}>
                                             {`📁 ${fName} (${count})`}
                                         </Text>
                                     </TouchableOpacity>
+
+                                    <TouchableOpacity
+                                        style={styles.folderRenameSmallBtn}
+                                        onPress={(e) => handleOpenRenameFolder(fName, e)}
+                                    >
+                                        <Text style={{ fontSize: 10, color: '#0284C7' }}>✏️</Text>
+                                    </TouchableOpacity>
+
                                     <TouchableOpacity
                                         style={styles.folderDeleteSmallBtn}
-                                        onPress={() => handleDeleteFolder(fName)}
+                                        onPress={(e) => handleDeleteFolder(fName, e)}
                                     >
                                         <Text style={{ fontSize: 10, color: '#DC2626' }}>✕</Text>
                                     </TouchableOpacity>
@@ -461,6 +630,7 @@ export default function BackupPage({ onClose }: { onClose?: () => void }) {
                     </MouseDragHorizontalScroll>
                 </View>
 
+                {/* 툴바 */}
                 <View style={styles.toolbarRow}>
                     <TouchableOpacity
                         style={styles.selectAllBtn}
@@ -497,7 +667,7 @@ export default function BackupPage({ onClose }: { onClose?: () => void }) {
 
                 {loading && (
                     <View style={styles.loadingBox}>
-                        <ActivityIndicator size="large" color="#F5933C" />
+                        <ActivityIndicator size="large" color="#0284C7" />
                         <Text style={styles.loadingText}>보관함 데이터를 처리하는 중...</Text>
                     </View>
                 )}
@@ -518,7 +688,7 @@ export default function BackupPage({ onClose }: { onClose?: () => void }) {
                         <Text style={styles.emptyTitle}>
                             {searchKeyword
                                 ? `'${searchKeyword}'에 대한 검색 결과가 없습니다.`
-                                : '해당 폴더에 앨범이 없습니다.'}
+                                : `[${activeRootCategory}] 보관함에 앨범이 없습니다.`}
                         </Text>
                     </View>
                 )}
@@ -551,13 +721,14 @@ export default function BackupPage({ onClose }: { onClose?: () => void }) {
                                         <MouseDragHorizontalScroll contentContainerStyle={styles.thumbScroll}>
                                             {album.imageUrls.map((mediaUrl, i) => {
                                                 const isVid = isVideoUrl(mediaUrl);
+
                                                 return (
-                                                    <View key={i} style={{ position: 'relative' }}>
+                                                    <View key={i} style={styles.thumbContainer}>
                                                         {isVid && Platform.OS === 'web' ? (
                                                             <div
                                                                 style={{
-                                                                    width: 70,
-                                                                    height: 50,
+                                                                    width: 78,
+                                                                    height: 60,
                                                                     position: 'relative',
                                                                     backgroundColor: '#000',
                                                                     borderRadius: 6,
@@ -609,7 +780,9 @@ export default function BackupPage({ onClose }: { onClose?: () => void }) {
                                                     }}
                                                 >
                                                     <Text style={styles.albumTitle}>
-                                                        {album.analysis?.title || '이름 없는 추억'}
+                                                        {album.curatedNote?.title ||
+                                                            album.analysis?.title ||
+                                                            '추억의 순간'}
                                                     </Text>
                                                     <View style={styles.folderTag}>
                                                         <Text
@@ -637,6 +810,17 @@ export default function BackupPage({ onClose }: { onClose?: () => void }) {
                                             </View>
 
                                             <View style={styles.cardBtnGroup}>
+                                                <TouchableOpacity
+                                                    style={styles.renameFilesBtn}
+                                                    onPress={() => {
+                                                        setFileManagerAlbum(album);
+                                                        setEditingTargetUrl(null);
+                                                        setNewFileNameInput('');
+                                                    }}
+                                                >
+                                                    <Text style={styles.renameFilesBtnText}>✏️ 파일명 관리</Text>
+                                                </TouchableOpacity>
+
                                                 <TouchableOpacity
                                                     style={styles.moveFolderBtn}
                                                     onPress={() => setMovingAlbum(album)}
@@ -672,7 +856,7 @@ export default function BackupPage({ onClose }: { onClose?: () => void }) {
                                                     style={styles.deleteSingleBtn}
                                                     onPress={() => handleDeleteSingle(album.id)}
                                                 >
-                                                    <Text style={styles.deleteSingleBtnText}>🗑️ 영구 삭제</Text>
+                                                    <Text style={styles.deleteSingleBtnText}>🗑️ 삭제</Text>
                                                 </TouchableOpacity>
                                             </View>
                                         </View>
@@ -683,7 +867,7 @@ export default function BackupPage({ onClose }: { onClose?: () => void }) {
                     </ScrollView>
                 )}
 
-                {/* 🌟 분리된 모달 컴포넌트들 연결 */}
+                {/* 모달들 */}
                 <CreateFolderModal
                     visible={isFolderModalOpen}
                     onClose={() => setIsFolderModalOpen(false)}
@@ -693,9 +877,9 @@ export default function BackupPage({ onClose }: { onClose?: () => void }) {
                 <MoveFolderModal
                     visible={movingAlbum !== null}
                     title="📁 앨범 폴더 변경"
-                    subtitle={`'${movingAlbum?.analysis?.title}' 앨범을 이동할 폴더를 선택해주세요.`}
+                    subtitle={`'${movingAlbum?.curatedNote?.title || movingAlbum?.analysis?.title}' 앨범을 이동할 [${activeRootCategory}] 폴더를 선택해주세요.`}
                     currentFolder={movingAlbum?.categoryFolder}
-                    folders={folders}
+                    folders={currentSubFolders}
                     onClose={() => setMovingAlbum(null)}
                     onSelectFolder={(f) => movingAlbum && handleMoveAlbumToFolder(movingAlbum.id, f)}
                 />
@@ -703,8 +887,8 @@ export default function BackupPage({ onClose }: { onClose?: () => void }) {
                 <MoveFolderModal
                     visible={isBatchMovingOpen}
                     title="📁 선택한 앨범 일괄 폴더 이동"
-                    subtitle={`선택한 ${selectedAlbumIds.size}개의 앨범을 일괄 이동할 대상 폴더를 선택해주세요.`}
-                    folders={folders}
+                    subtitle={`선택한 ${selectedAlbumIds.size}개의 앨범을 일괄 이동할 [${activeRootCategory}] 대상 폴더를 선택해주세요.`}
+                    folders={currentSubFolders}
                     onClose={() => setIsBatchMovingOpen(false)}
                     onSelectFolder={handleBatchMoveAlbumsToFolder}
                 />
@@ -717,6 +901,161 @@ export default function BackupPage({ onClose }: { onClose?: () => void }) {
                     onRollbackVersion={handleRollbackToHistoryVersion}
                     onDeleteHistoryVersion={handleDeleteHistoryFromBackup}
                 />
+
+                {/* 큰 폴더 이름 변경 모달 */}
+                <Modal
+                    visible={renameFolderModalOpen}
+                    transparent
+                    animationType="fade"
+                    onRequestClose={() => setRenameFolderModalOpen(false)}
+                >
+                    <View style={styles.modalOverlay}>
+                        <View style={styles.modalContainer}>
+                            <Text style={styles.modalTitle}>📁 폴더 이름 변경</Text>
+                            <Text style={styles.modalSubtitle}>현재 폴더명: '{targetFolderToRename}'</Text>
+
+                            <TextInput
+                                style={styles.modalInput}
+                                value={newFolderNameInput}
+                                onChangeText={setNewFolderNameInput}
+                                placeholder="새로운 폴더명을 입력하세요"
+                                placeholderTextColor="#94A3B8"
+                                autoFocus
+                            />
+
+                            <View style={styles.modalBtnRow}>
+                                <TouchableOpacity
+                                    style={styles.modalCancelBtn}
+                                    onPress={() => setRenameFolderModalOpen(false)}
+                                >
+                                    <Text style={styles.modalCancelBtnText}>취소</Text>
+                                </TouchableOpacity>
+                                <TouchableOpacity style={styles.modalConfirmBtn} onPress={handleConfirmRenameFolder}>
+                                    <Text style={styles.modalConfirmBtnText}>변경 완료</Text>
+                                </TouchableOpacity>
+                            </View>
+                        </View>
+                    </View>
+                </Modal>
+
+                {/* 개별 사진 파일명 관리 모달 */}
+                <Modal
+                    visible={fileManagerAlbum !== null}
+                    transparent
+                    animationType="fade"
+                    onRequestClose={() => !isRenamingFile && setFileManagerAlbum(null)}
+                >
+                    <View style={styles.modalOverlay}>
+                        <View style={styles.fileManagerModal}>
+                            <View style={styles.modalHeaderRow}>
+                                <View>
+                                    <Text style={styles.modalTitle}>🖼️ 앨범 사진 파일명 관리</Text>
+                                    <Text style={styles.modalSubtitle}>
+                                        {fileManagerAlbum?.curatedNote?.title ||
+                                            fileManagerAlbum?.analysis?.title ||
+                                            '추억 앨범'}{' '}
+                                        내부의 사진 파일명을 변경합니다.
+                                    </Text>
+                                </View>
+                                <TouchableOpacity
+                                    style={styles.closeBtn}
+                                    onPress={() => setFileManagerAlbum(null)}
+                                    disabled={isRenamingFile}
+                                >
+                                    <Text style={styles.closeBtnText}>✕</Text>
+                                </TouchableOpacity>
+                            </View>
+
+                            <ScrollView style={styles.fileListScroll} contentContainerStyle={{ gap: 10 }}>
+                                {fileManagerAlbum?.imageUrls.map((imgUrl, idx) => {
+                                    const rawFileName = imgUrl.split('/').pop() || `photo_${idx + 1}.jpg`;
+                                    const dotIdx = rawFileName.lastIndexOf('.');
+                                    const baseName = dotIdx !== -1 ? rawFileName.substring(0, dotIdx) : rawFileName;
+                                    const isEditing = editingTargetUrl === imgUrl;
+
+                                    return (
+                                        <View key={idx} style={styles.fileRowItem}>
+                                            <Image
+                                                source={{ uri: imgUrl }}
+                                                style={styles.fileRowThumb}
+                                                resizeMode="cover"
+                                            />
+
+                                            <View style={{ flex: 1, paddingHorizontal: 10 }}>
+                                                {isEditing ? (
+                                                    <TextInput
+                                                        style={styles.fileInlineInput}
+                                                        value={newFileNameInput}
+                                                        onChangeText={setNewFileNameInput}
+                                                        placeholder="새 파일명 입력"
+                                                        placeholderTextColor="#94A3B8"
+                                                        autoFocus
+                                                        editable={!isRenamingFile}
+                                                    />
+                                                ) : (
+                                                    <Text
+                                                        style={styles.fileRowName}
+                                                        numberOfLines={1}
+                                                        ellipsizeMode="middle"
+                                                    >
+                                                        📄 {rawFileName}
+                                                    </Text>
+                                                )}
+                                            </View>
+
+                                            <View style={{ flexDirection: 'row', gap: 6 }}>
+                                                {isEditing ? (
+                                                    <>
+                                                        <TouchableOpacity
+                                                            style={styles.inlineCancelBtn}
+                                                            onPress={() => {
+                                                                setEditingTargetUrl(null);
+                                                                setNewFileNameInput('');
+                                                            }}
+                                                            disabled={isRenamingFile}
+                                                        >
+                                                            <Text style={styles.inlineCancelText}>취소</Text>
+                                                        </TouchableOpacity>
+                                                        <TouchableOpacity
+                                                            style={styles.inlineConfirmBtn}
+                                                            onPress={() => handleExecuteRenameFile(imgUrl)}
+                                                            disabled={isRenamingFile}
+                                                        >
+                                                            {isRenamingFile ? (
+                                                                <ActivityIndicator size="small" color="#fff" />
+                                                            ) : (
+                                                                <Text style={styles.inlineConfirmText}>저장</Text>
+                                                            )}
+                                                        </TouchableOpacity>
+                                                    </>
+                                                ) : (
+                                                    <TouchableOpacity
+                                                        style={styles.inlineEditBtn}
+                                                        onPress={() => {
+                                                            setEditingTargetUrl(imgUrl);
+                                                            setNewFileNameInput(baseName);
+                                                        }}
+                                                    >
+                                                        <Text style={styles.inlineEditText}>✏️ 이름 변경</Text>
+                                                    </TouchableOpacity>
+                                                )}
+                                            </View>
+                                        </View>
+                                    );
+                                })}
+                            </ScrollView>
+
+                            <View style={styles.modalFooterRow}>
+                                <TouchableOpacity
+                                    style={styles.closeFooterBtn}
+                                    onPress={() => setFileManagerAlbum(null)}
+                                >
+                                    <Text style={styles.closeFooterBtnText}>닫기</Text>
+                                </TouchableOpacity>
+                            </View>
+                        </View>
+                    </View>
+                </Modal>
             </View>
         </View>
     );
@@ -725,7 +1064,7 @@ export default function BackupPage({ onClose }: { onClose?: () => void }) {
 const styles = StyleSheet.create({
     pageContainer: {
         flex: 1,
-        backgroundColor: 'rgba(0,0,0,0.6)',
+        backgroundColor: 'rgba(15, 23, 42, 0.45)',
         justifyContent: 'center',
         alignItems: 'center',
         padding: 24,
@@ -737,32 +1076,58 @@ const styles = StyleSheet.create({
         backgroundColor: '#FFFFFF',
         borderRadius: 16,
         padding: 24,
-        shadowColor: '#000',
-        shadowOpacity: 0.2,
-        shadowRadius: 16,
-        shadowOffset: { width: 0, height: 6 },
+        borderWidth: 1,
+        borderColor: '#E2E8F0',
     },
     headerRow: {
         flexDirection: 'row',
         justifyContent: 'space-between',
         alignItems: 'center',
         borderBottomWidth: 1,
-        borderBottomColor: '#F0F0F0',
+        borderBottomColor: '#F1F5F9',
         paddingBottom: 14,
         marginBottom: 12,
     },
-    title: { fontSize: 20, fontWeight: '800', color: '#1A1A1A' },
-    subtitle: { fontSize: 13, color: '#71717A', marginTop: 4 },
+    title: { fontSize: 20, fontWeight: '800', color: '#0F172A' },
+    subtitle: { fontSize: 13, color: '#64748B', marginTop: 4 },
     closeBtn: {
         padding: 8,
-        backgroundColor: '#F4F4F5',
+        backgroundColor: '#F1F5F9',
         borderRadius: 20,
         width: 36,
         height: 36,
         alignItems: 'center',
         justifyContent: 'center',
     },
-    closeBtnText: { fontSize: 16, color: '#52525B', fontWeight: '800', lineHeight: 18 },
+    closeBtnText: { fontSize: 16, color: '#475569', fontWeight: '800', lineHeight: 18 },
+    rootCategoryBar: {
+        flexDirection: 'row',
+        gap: 10,
+        marginBottom: 12,
+    },
+    rootTabBtn: {
+        flex: 1,
+        paddingVertical: 10,
+        borderRadius: 10,
+        backgroundColor: '#F8FAFC',
+        borderWidth: 1.5,
+        borderColor: '#E2E8F0',
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    rootTabBtnActive: {
+        backgroundColor: '#F0F9FF',
+        borderColor: '#0284C7',
+    },
+    rootTabBtnText: {
+        fontSize: 14,
+        fontWeight: '700',
+        color: '#64748B',
+    },
+    rootTabBtnTextActive: {
+        color: '#0284C7',
+        fontWeight: '800',
+    },
     folderActionBar: {
         flexDirection: 'row',
         justifyContent: 'space-between',
@@ -782,9 +1147,9 @@ const styles = StyleSheet.create({
         height: 40,
         gap: 8,
     },
-    searchInput: { flex: 1, fontSize: 13, color: '#1E293B', outlineStyle: 'none' as any },
+    searchInput: { flex: 1, fontSize: 13, color: '#0F172A', outlineStyle: 'none' as any },
     createFolderBtn: {
-        backgroundColor: '#0F172A',
+        backgroundColor: '#0284C7',
         paddingHorizontal: 14,
         height: 40,
         borderRadius: 8,
@@ -801,25 +1166,39 @@ const styles = StyleSheet.create({
     folderTab: {
         paddingVertical: 6,
         paddingHorizontal: 12,
-        borderRadius: 20,
+        borderRadius: 12,
         backgroundColor: '#F1F5F9',
         borderWidth: 1,
         borderColor: '#E2E8F0',
     },
-    folderTabActive: { backgroundColor: '#F5933C', borderColor: '#F5933C' },
-    folderTabText: { fontSize: 12, color: '#475569', fontWeight: '700' },
-    folderTabTextActive: { color: '#FFFFFF' },
+    folderTabActive: { backgroundColor: '#0284C7', borderColor: '#0284C7' },
+    folderTabText: { fontSize: 12, color: '#475569', fontWeight: '600' },
+    folderTabTextActive: { color: '#FFFFFF', fontWeight: '700' },
     customFolderTabContainer: { flexDirection: 'row', alignItems: 'center', position: 'relative' },
-    folderDeleteSmallBtn: {
-        marginLeft: -6,
-        marginRight: 4,
-        backgroundColor: '#FEE2E2',
+    folderRenameSmallBtn: {
+        marginLeft: -8,
+        marginRight: 2,
+        backgroundColor: '#E0F2FE',
         borderRadius: 10,
-        width: 16,
-        height: 16,
+        width: 18,
+        height: 18,
         alignItems: 'center',
         justifyContent: 'center',
         zIndex: 5,
+        borderWidth: 1,
+        borderColor: '#BAE6FD',
+    },
+    folderDeleteSmallBtn: {
+        marginRight: 4,
+        backgroundColor: '#FEE2E2',
+        borderRadius: 10,
+        width: 18,
+        height: 18,
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 5,
+        borderWidth: 1,
+        borderColor: '#FCA5A5',
     },
     toolbarRow: {
         flexDirection: 'row',
@@ -832,22 +1211,22 @@ const styles = StyleSheet.create({
     selectAllBtn: {
         paddingVertical: 6,
         paddingHorizontal: 10,
-        backgroundColor: '#F4F4F5',
+        backgroundColor: '#F1F5F9',
         borderRadius: 8,
         borderWidth: 1,
-        borderColor: '#E4E4E7',
+        borderColor: '#CBD5E1',
     },
-    selectAllBtnText: { fontSize: 12, color: '#3F3F46', fontWeight: '700' },
+    selectAllBtnText: { fontSize: 12, color: '#475569', fontWeight: '700' },
     batchActionGroup: { flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
     batchMoveBtn: {
-        backgroundColor: '#2563EB',
+        backgroundColor: '#0284C7',
         paddingVertical: 6,
         paddingHorizontal: 12,
         borderRadius: 8,
     },
     batchMoveBtnText: { fontSize: 12, color: '#FFFFFF', fontWeight: '700' },
     batchRestoreBtn: {
-        backgroundColor: '#F5933C',
+        backgroundColor: '#0EA5E9',
         paddingVertical: 6,
         paddingHorizontal: 12,
         borderRadius: 8,
@@ -863,13 +1242,13 @@ const styles = StyleSheet.create({
     },
     batchDeleteBtnText: { fontSize: 12, color: '#DC2626', fontWeight: '700' },
     loadingBox: { alignItems: 'center', marginVertical: 40 },
-    loadingText: { marginTop: 12, fontSize: 14, color: '#71717A' },
+    loadingText: { marginTop: 12, fontSize: 14, color: '#64748B' },
     emptyBox: { alignItems: 'center', marginVertical: 40 },
     emptyIcon: { fontSize: 40, marginBottom: 12 },
-    emptyTitle: { fontSize: 16, fontWeight: '700', color: '#3F3F46' },
+    emptyTitle: { fontSize: 16, fontWeight: '700', color: '#475569' },
     retryBtn: {
         marginTop: 16,
-        backgroundColor: '#F5933C',
+        backgroundColor: '#0284C7',
         paddingVertical: 8,
         paddingHorizontal: 16,
         borderRadius: 8,
@@ -880,30 +1259,31 @@ const styles = StyleSheet.create({
     albumCard: {
         flexDirection: 'row',
         alignItems: 'center',
-        borderWidth: 1.5,
-        borderColor: '#E4E4E7',
-        borderRadius: 12,
+        borderWidth: 1,
+        borderColor: '#E2E8F0',
+        borderRadius: 14,
         padding: 16,
-        backgroundColor: '#FAFAFA',
+        backgroundColor: '#FFFFFF',
         gap: 16,
     },
-    albumCardSelected: { borderColor: '#F5933C', backgroundColor: '#FFFDF9' },
+    albumCardSelected: { borderColor: '#0284C7', backgroundColor: '#F0F9FF' },
     checkbox: {
         width: 22,
         height: 22,
         borderRadius: 6,
         borderWidth: 1.5,
-        borderColor: '#A1A1AA',
+        borderColor: '#94A3B8',
         backgroundColor: '#FFFFFF',
         justifyContent: 'center',
         alignItems: 'center',
     },
-    checkboxActive: { backgroundColor: '#F5933C', borderColor: '#F5933C' },
+    checkboxActive: { backgroundColor: '#0284C7', borderColor: '#0284C7' },
     checkmark: { fontSize: 12, color: 'transparent', fontWeight: '800' },
     checkmarkActive: { color: '#FFFFFF' },
     albumInfoWrapper: { flex: 1, gap: 10 },
-    thumbScroll: { flexDirection: 'row', gap: 8 },
-    thumbImg: { width: 70, height: 50, borderRadius: 6, backgroundColor: '#E4E4E7' },
+    thumbScroll: { flexDirection: 'row', gap: 10 },
+    thumbContainer: { width: 78, height: 60, borderRadius: 6, backgroundColor: '#E2E8F0', overflow: 'hidden' },
+    thumbImg: { width: 78, height: 60, borderRadius: 6 },
     metaRow: {
         flexDirection: 'row',
         justifyContent: 'space-between',
@@ -911,16 +1291,14 @@ const styles = StyleSheet.create({
         flexWrap: 'wrap',
         gap: 8,
     },
-    albumTitle: { fontSize: 16, fontWeight: '700', color: '#18181B' },
+    albumTitle: { fontSize: 16, fontWeight: '700', color: '#0F172A' },
     folderTag: {
-        backgroundColor: '#FEF3C7',
-        borderWidth: 1,
-        borderColor: '#FDE68A',
+        backgroundColor: '#F1F5F9',
         paddingHorizontal: 6,
         paddingVertical: 2,
         borderRadius: 4,
     },
-    folderTagText: { fontSize: 11, color: '#B45309', fontWeight: '700' },
+    folderTagText: { fontSize: 11, color: '#475569', fontWeight: '600' },
     historyBadge: {
         backgroundColor: '#F3E8FF',
         borderWidth: 1,
@@ -939,42 +1317,170 @@ const styles = StyleSheet.create({
         borderRadius: 4,
     },
     alreadyBadgeText: { fontSize: 11, color: '#0369A1', fontWeight: '700' },
-    albumSub: { fontSize: 12, color: '#71717A', marginTop: 2 },
-    cardBtnGroup: { flexDirection: 'row', gap: 6 },
-    moveFolderBtn: {
-        backgroundColor: '#EFF6FF',
+    albumSub: { fontSize: 12, color: '#64748B', marginTop: 2 },
+    cardBtnGroup: { flexDirection: 'row', gap: 6, flexWrap: 'wrap' },
+    renameFilesBtn: {
+        backgroundColor: '#E0F2FE',
         borderWidth: 1,
-        borderColor: '#BFDBFE',
+        borderColor: '#BAE6FD',
+        paddingHorizontal: 10,
+        paddingVertical: 6,
+        borderRadius: 6,
+    },
+    renameFilesBtnText: { fontSize: 11, fontWeight: '700', color: '#0284C7' },
+    moveFolderBtn: {
+        backgroundColor: '#F1F5F9',
         paddingHorizontal: 8,
         paddingVertical: 6,
         borderRadius: 6,
     },
-    moveFolderBtnText: { fontSize: 12, fontWeight: '700', color: '#1D4ED8' },
+    moveFolderBtnText: { fontSize: 11, fontWeight: '600', color: '#475569' },
     detailBtn: {
-        backgroundColor: '#F4F4F5',
-        borderWidth: 1,
-        borderColor: '#E4E4E7',
+        backgroundColor: '#F1F5F9',
         paddingHorizontal: 10,
         paddingVertical: 6,
         borderRadius: 6,
     },
-    detailBtnText: { fontSize: 12, fontWeight: '700', color: '#3F3F46' },
+    detailBtnText: { fontSize: 11, fontWeight: '600', color: '#475569' },
     restoreSingleBtn: {
-        backgroundColor: '#F5933C',
+        backgroundColor: '#0284C7',
         paddingHorizontal: 12,
         paddingVertical: 6,
         borderRadius: 6,
     },
-    restoreSingleBtnDisabled: { backgroundColor: '#E4E4E7', borderWidth: 1, borderColor: '#D4D4D8' },
-    restoreSingleBtnText: { fontSize: 12, fontWeight: '700', color: '#FFFFFF' },
-    restoreSingleBtnTextDisabled: { color: '#71717A' },
+    restoreSingleBtnDisabled: { backgroundColor: '#E2E8F0' },
+    restoreSingleBtnText: { fontSize: 11, fontWeight: '700', color: '#FFFFFF' },
+    restoreSingleBtnTextDisabled: { color: '#94A3B8' },
     deleteSingleBtn: {
-        backgroundColor: '#FEE2E2',
-        borderWidth: 1,
-        borderColor: '#FCA5A5',
+        backgroundColor: '#FEF2F2',
         paddingHorizontal: 10,
         paddingVertical: 6,
         borderRadius: 6,
     },
-    deleteSingleBtnText: { fontSize: 12, fontWeight: '700', color: '#DC2626' },
+    deleteSingleBtnText: { fontSize: 11, fontWeight: '600', color: '#EF4444' },
+    modalOverlay: {
+        flex: 1,
+        backgroundColor: 'rgba(15, 23, 42, 0.45)',
+        justifyContent: 'center',
+        alignItems: 'center',
+        padding: 20,
+    },
+    modalContainer: {
+        width: '100%',
+        maxWidth: 380,
+        backgroundColor: '#FFFFFF',
+        borderRadius: 14,
+        padding: 20,
+        borderWidth: 1,
+        borderColor: '#E2E8F0',
+    },
+    modalTitle: { fontSize: 17, fontWeight: '800', color: '#0F172A' },
+    modalSubtitle: { fontSize: 12, color: '#64748B', marginTop: 4, marginBottom: 14 },
+    modalInput: {
+        borderWidth: 1,
+        borderColor: '#CBD5E1',
+        borderRadius: 8,
+        paddingHorizontal: 12,
+        paddingVertical: 10,
+        fontSize: 14,
+        color: '#0F172A',
+        backgroundColor: '#F8FAFC',
+        marginBottom: 16,
+    },
+    modalBtnRow: { flexDirection: 'row', justifyContent: 'flex-end', gap: 8 },
+    modalCancelBtn: {
+        paddingVertical: 8,
+        paddingHorizontal: 14,
+        borderRadius: 6,
+        backgroundColor: '#F1F5F9',
+    },
+    modalCancelBtnText: { fontSize: 13, fontWeight: '600', color: '#64748B' },
+    modalConfirmBtn: {
+        paddingVertical: 8,
+        paddingHorizontal: 16,
+        borderRadius: 6,
+        backgroundColor: '#0284C7',
+        minWidth: 80,
+        alignItems: 'center',
+    },
+    modalConfirmBtnText: { fontSize: 13, fontWeight: '700', color: '#FFFFFF' },
+    fileManagerModal: {
+        width: '100%',
+        maxWidth: 520,
+        maxHeight: '80%',
+        backgroundColor: '#FFFFFF',
+        borderRadius: 16,
+        padding: 20,
+        borderWidth: 1,
+        borderColor: '#E2E8F0',
+    },
+    modalHeaderRow: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'flex-start',
+        borderBottomWidth: 1,
+        borderBottomColor: '#F1F5F9',
+        paddingBottom: 12,
+        marginBottom: 12,
+    },
+    fileListScroll: { maxHeight: 360 },
+    fileRowItem: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        backgroundColor: '#F8FAFC',
+        borderWidth: 1,
+        borderColor: '#E2E8F0',
+        borderRadius: 10,
+        padding: 8,
+    },
+    fileRowThumb: { width: 50, height: 42, borderRadius: 6, backgroundColor: '#E2E8F0' },
+    fileRowName: { fontSize: 13, color: '#1E293B', fontWeight: '600' },
+    fileInlineInput: {
+        backgroundColor: '#FFFFFF',
+        borderWidth: 1,
+        borderColor: '#0284C7',
+        borderRadius: 6,
+        paddingHorizontal: 8,
+        paddingVertical: 4,
+        fontSize: 13,
+        color: '#0F172A',
+    },
+    inlineEditBtn: {
+        backgroundColor: '#E0F2FE',
+        paddingVertical: 5,
+        paddingHorizontal: 9,
+        borderRadius: 6,
+    },
+    inlineEditText: { fontSize: 11, fontWeight: '700', color: '#0284C7' },
+    inlineCancelBtn: {
+        backgroundColor: '#F1F5F9',
+        paddingVertical: 5,
+        paddingHorizontal: 8,
+        borderRadius: 6,
+    },
+    inlineCancelText: { fontSize: 11, color: '#64748B' },
+    inlineConfirmBtn: {
+        backgroundColor: '#0284C7',
+        paddingVertical: 5,
+        paddingHorizontal: 10,
+        borderRadius: 6,
+        minWidth: 44,
+        alignItems: 'center',
+    },
+    inlineConfirmText: { fontSize: 11, color: '#FFFFFF', fontWeight: '700' },
+    modalFooterRow: {
+        borderTopWidth: 1,
+        borderTopColor: '#F1F5F9',
+        paddingTop: 12,
+        marginTop: 12,
+        flexDirection: 'row',
+        justifyContent: 'flex-end',
+    },
+    closeFooterBtn: {
+        backgroundColor: '#F1F5F9',
+        paddingVertical: 8,
+        paddingHorizontal: 18,
+        borderRadius: 8,
+    },
+    closeFooterBtnText: { fontSize: 13, fontWeight: '700', color: '#475569' },
 });

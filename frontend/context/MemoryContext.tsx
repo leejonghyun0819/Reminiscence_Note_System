@@ -22,6 +22,30 @@ export interface MemoryHistoryItem {
     storyCaption: string;
 }
 
+export interface CuratedNote {
+    title: string;
+    sceneDescription: string;
+    remembered: string;
+    unremembered: string;
+    reflection: string;
+}
+
+export interface InterviewQAItem {
+    id: string;
+    category: string;
+    targetClue?: string;
+    question: string;
+    quickOptions?: string[];
+    answer: string;
+}
+
+export interface InterviewData {
+    estimatedEra: string;
+    sceneFacts: string;
+    visualClues: string[];
+    questions: InterviewQAItem[];
+}
+
 export type AnalysisVersion = MemoryHistoryItem;
 export type BackupAlbumItem = MemoryItem;
 export type UpdateMemoryPayload = {
@@ -31,12 +55,18 @@ export type UpdateMemoryPayload = {
     description?: string;
     storyCaption?: string;
     categoryFolder?: string;
+    mode?: 'travel' | 'childhood';
+    rootCategory?: '유년시절' | '여행';
+    curatedNote?: CuratedNote;
+    interviewData?: InterviewData;
 };
 
 export type UploadableAsset = any;
 
 export interface MemoryItem {
     id: string;
+    mode?: 'travel' | 'childhood';
+    rootCategory?: '유년시절' | '여행';
     fileNames: string[];
     imageUrls: string[];
     audioFileName?: string;
@@ -45,14 +75,21 @@ export interface MemoryItem {
     analysis?: AnalysisData;
     history?: MemoryHistoryItem[];
     createdAt?: number;
+    interviewData?: InterviewData;
+    curatedNote?: CuratedNote;
 }
 
 interface MemoryContextType {
     memoryList: MemoryItem[];
+    memories: MemoryItem[];
     selectedEnhanceMemory: MemoryItem | null;
     selectedGenerateMemory: MemoryItem | null;
     folderList: string[];
+    categorizedFolders: { [key: string]: string[] };
     generatedNotes: MemoryItem[];
+
+    currentMode: 'travel' | 'childhood';
+    setCurrentMode: (mode: 'travel' | 'childhood') => void;
 
     fetchMemories: () => Promise<void>;
     fetchFolders: () => Promise<void>;
@@ -86,14 +123,13 @@ interface MemoryContextType {
     deleteSingleImage: (memoryId: string, targetImageUrl: string) => Promise<boolean>;
     deleteHistoryVersion: (memoryId: string, version: number) => Promise<boolean>;
 
-    createFolder: (name: string) => Promise<boolean>;
+    createFolder: (name: string, rootCategory?: '유년시절' | '여행') => Promise<boolean>;
     moveMemoryToFolder: (memoryId: string, folderName: string) => Promise<boolean>;
     batchMoveMemoriesToFolder: (albumIds: string[], folderName: string) => Promise<boolean>;
 }
 
 const MemoryContext = createContext<MemoryContextType | undefined>(undefined);
 
-// Web & Mobile 에셋을 완벽하게 Blob으로 변환
 async function assetToBlob(asset: any, defaultName: string): Promise<{ blob: Blob; name: string }> {
     if (!asset) {
         return { blob: new Blob([''], { type: 'image/jpeg' }), name: defaultName };
@@ -133,19 +169,30 @@ async function assetToBlob(asset: any, defaultName: string): Promise<{ blob: Blo
 }
 
 export const MemoryProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-    // 🌟 새로고침 시 작업 목록(memoryList)은 항상 빈 배열([])로 초기화
     const [memoryList, setMemoryList] = useState<MemoryItem[]>([]);
     const [selectedEnhanceMemory, setSelectedEnhanceMemory] = useState<MemoryItem | null>(null);
     const [selectedGenerateMemory, setSelectedGenerateMemory] = useState<MemoryItem | null>(null);
     const [generatedNotes, setGeneratedNotes] = useState<MemoryItem[]>([]);
     const [folderList, setFolderList] = useState<string[]>(['미분류']);
+    const [categorizedFolders, setCategorizedFolders] = useState<{ [key: string]: string[] }>({
+        유년시절: [],
+        여행: [],
+    });
+    const [currentMode, setCurrentMode] = useState<'travel' | 'childhood'>('childhood');
 
     const fetchFolders = async () => {
         try {
             const res = await fetch(`${BACKEND_URL}/api/folders`);
             if (res.ok) {
                 const data = await res.json();
-                setFolderList(data);
+                if (data && data.all && Array.isArray(data.all)) {
+                    setFolderList(['미분류', ...data.all.filter((f: string) => f !== '미분류')]);
+                    if (data.categorized) {
+                        setCategorizedFolders(data.categorized);
+                    }
+                } else if (Array.isArray(data)) {
+                    setFolderList(data);
+                }
             }
         } catch (e) {
             console.error('폴더 로딩 실패:', e);
@@ -168,7 +215,6 @@ export const MemoryProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     };
 
     useEffect(() => {
-        // 🌟 폴더 목록만 가져오고, memoryList 자동 로드는 생략하여 홈 화면을 깨끗하게 유지
         fetchFolders();
     }, []);
 
@@ -198,7 +244,13 @@ export const MemoryProvider: React.FC<{ children: React.ReactNode }> = ({ childr
                 } else if (Array.isArray(arg)) {
                     imageAssets = arg;
                 } else if (typeof arg === 'object' && arg !== null) {
-                    if ('title' in arg || 'description' in arg || 'storyCaption' in arg || 'analysis' in arg) {
+                    if (
+                        'title' in arg ||
+                        'description' in arg ||
+                        'storyCaption' in arg ||
+                        'analysis' in arg ||
+                        'mode' in arg
+                    ) {
                         rawAnalysis = arg.analysis || arg;
                         if (arg.images && Array.isArray(arg.images)) imageAssets = arg.images;
                         if (arg.audio) audioAsset = arg.audio;
@@ -223,9 +275,20 @@ export const MemoryProvider: React.FC<{ children: React.ReactNode }> = ({ childr
                 audioTranscriptSummary: targetAnalysis.audioTranscriptSummary || '',
             };
 
+            const finalMode = rawAnalysis.mode || currentMode;
+            const finalRoot = finalMode === 'childhood' ? '유년시절' : '여행';
+
+            const payloadAnalysis = {
+                analysis,
+                mode: finalMode,
+                rootCategory: finalRoot,
+                curatedNote: rawAnalysis.curatedNote,
+                interviewData: rawAnalysis.interviewData,
+            };
+
             const formData = new FormData();
             formData.append('id', id);
-            formData.append('analysisJson', JSON.stringify(analysis));
+            formData.append('analysisJson', JSON.stringify(payloadAnalysis));
             formData.append('categoryFolder', categoryFolder || '미분류');
 
             for (let i = 0; i < imageAssets.length; i++) {
@@ -292,10 +355,20 @@ export const MemoryProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
     const updateMemoryItem = async (id: string, updates: UpdateMemoryPayload): Promise<MemoryHistoryItem[] | null> => {
         try {
+            // mode에 따라 rootCategory 자동 보정 후 백엔드 전송
+            const resolvedRoot =
+                updates.rootCategory ||
+                (updates.mode === 'childhood' ? '유년시절' : updates.mode === 'travel' ? '여행' : undefined);
+
+            const payload = {
+                ...updates,
+                rootCategory: resolvedRoot,
+            };
+
             const res = await fetch(`${BACKEND_URL}/api/memories/${id}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(updates),
+                body: JSON.stringify(payload),
             });
             if (res.ok) {
                 const data = await res.json();
@@ -307,6 +380,10 @@ export const MemoryProvider: React.FC<{ children: React.ReactNode }> = ({ childr
                                 ...m,
                                 analysis: { ...m.analysis, ...updates },
                                 categoryFolder: updates.categoryFolder ?? m.categoryFolder,
+                                mode: updates.mode ?? m.mode,
+                                rootCategory: resolvedRoot ?? m.rootCategory,
+                                curatedNote: updates.curatedNote ?? m.curatedNote,
+                                interviewData: updates.interviewData ?? m.interviewData,
                                 history: nextHistory,
                             };
                         }
@@ -484,12 +561,12 @@ export const MemoryProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         setSelectedGenerateMemory(null);
     };
 
-    const createFolder = async (name: string): Promise<boolean> => {
+    const createFolder = async (name: string, rootCategory?: '유년시절' | '여행'): Promise<boolean> => {
         try {
             const res = await fetch(`${BACKEND_URL}/api/folders`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name }),
+                body: JSON.stringify({ name, rootCategory: rootCategory || '여행' }),
             });
             if (res.ok) {
                 await fetchFolders();
@@ -540,10 +617,14 @@ export const MemoryProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         <MemoryContext.Provider
             value={{
                 memoryList,
+                memories: memoryList,
                 selectedEnhanceMemory,
                 selectedGenerateMemory,
                 folderList,
+                categorizedFolders,
                 generatedNotes,
+                currentMode,
+                setCurrentMode,
                 fetchMemories,
                 fetchFolders,
                 setSelectedEnhanceMemory,
@@ -582,3 +663,5 @@ export const useMemory = () => {
     }
     return context;
 };
+
+export default MemoryProvider;

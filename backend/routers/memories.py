@@ -24,28 +24,28 @@ router = APIRouter(prefix="/api/memories", tags=["Memories"])
 def find_local_media_path(target_url: str) -> str:
     """URL로부터 로컬 디스크의 실제 이미지 파일 경로를 완벽하게 탐색"""
     parsed = urlparse(target_url)
-    rel_path = parsed.path.lstrip("/")  # 예: "enhanced/xxx.jpg" 또는 "albums/folder/xxx.jpg"
+    rel_path = parsed.path.lstrip("/")
     file_name = os.path.basename(rel_path)
 
-    # 1. /enhanced/ 경로인 경우 ENHANCED_DIR에서 직접 탐색
+    # 1. /enhanced/ 경로인 경우
     if rel_path.startswith("enhanced/"):
         enhanced_path = os.path.join(ENHANCED_DIR, file_name)
         if os.path.exists(enhanced_path) and os.path.isfile(enhanced_path):
             return enhanced_path
 
-    # 2. /albums/ 경로인 경우 ALBUMS_DIR 기준으로 탐색
+    # 2. /albums/ 경로인 경우
     if rel_path.startswith("albums/"):
         album_sub_path = rel_path[len("albums/"):].lstrip("/")
         direct_album_path = os.path.join(ALBUMS_DIR, album_sub_path)
         if os.path.exists(direct_album_path) and os.path.isfile(direct_album_path):
             return direct_album_path
 
-    # 3. ENHANCED_DIR에 해당 파일명이 있는지 탐색 (연쇄 작업 지원)
+    # 3. ENHANCED_DIR 탐색
     fallback_enhanced = os.path.join(ENHANCED_DIR, file_name)
     if os.path.exists(fallback_enhanced) and os.path.isfile(fallback_enhanced):
         return fallback_enhanced
 
-    # 4. ALBUMS_DIR 및 모든 하위 폴더 재귀 탐색
+    # 4. ALBUMS_DIR 재귀 탐색
     for root, _, files in os.walk(ALBUMS_DIR):
         if file_name in files:
             found = os.path.join(root, file_name)
@@ -89,6 +89,10 @@ async def create_multi_memory(
         else:
             target = {}
 
+        # 🌟 mode 감지 ('childhood' -> '유년시절', 그 외 -> '여행')
+        raw_mode = raw.get("mode") or target.get("mode") or "travel"
+        root_category = "유년시절" if raw_mode == "childhood" else "여행"
+
         title = target.get("title") or target.get("albumTitle") or "추억의 순간"
         location = target.get("location") or target.get("place") or "장소 미상"
         year_estimate = target.get("yearEstimate") or target.get("year_estimate") or target.get("date") or "시기 미상"
@@ -105,15 +109,13 @@ async def create_multi_memory(
             "audioTranscriptSummary": audio_transcript_summary,
         }
 
-        if categoryFolder and categoryFolder != "미분류":
-            parent_dir = os.path.join(ALBUMS_DIR, categoryFolder)
-            os.makedirs(parent_dir, exist_ok=True)
-            album_folder = os.path.join(parent_dir, id)
-            relative_url_prefix = f"{categoryFolder}/{id}"
-        else:
-            album_folder = os.path.join(ALBUMS_DIR, id)
-            relative_url_prefix = f"{id}"
+        # 🌟 대분류(유년시절/여행) 경로 하위에 폴더 및 앨범 배치
+        folder_clean = categoryFolder if (categoryFolder and categoryFolder != "미분류") else "미분류"
+        parent_dir = os.path.join(ALBUMS_DIR, root_category, folder_clean)
+        os.makedirs(parent_dir, exist_ok=True)
 
+        album_folder = os.path.join(parent_dir, id)
+        relative_url_prefix = f"{root_category}/{folder_clean}/{id}"
         os.makedirs(album_folder, exist_ok=True)
 
         file_names = []
@@ -147,12 +149,16 @@ async def create_multi_memory(
 
         album_meta = {
             "id": id,
+            "mode": raw_mode,
+            "rootCategory": root_category,
             "fileNames": file_names,
             "imageUrls": image_urls,
             "audioFileName": audio_file_name,
             "audioUrl": audio_url,
             "categoryFolder": categoryFolder,
             "analysis": analysis_dict,
+            "curatedNote": raw.get("curatedNote"),
+            "interviewData": raw.get("interviewData"),
             "history": initial_history,
             "createdAt": int(os.path.getmtime(album_folder) * 1000)
         }
@@ -182,13 +188,17 @@ async def create_multi_memory(
 
         return {
             "id": id,
+            "mode": raw_mode,
+            "rootCategory": root_category,
             "fileNames": file_names,
             "imageUrls": image_urls,
             "audioFileName": audio_file_name,
             "audioUrl": audio_url,
             "categoryFolder": categoryFolder,
             "history": initial_history,
-            "analysis": analysis_dict
+            "analysis": analysis_dict,
+            "curatedNote": raw.get("curatedNote"),
+            "interviewData": raw.get("interviewData"),
         }
     except Exception as e:
         print(f"Error creating multi-memory: {e}")
@@ -244,11 +254,15 @@ async def append_files_to_memory(
         print(f"Error appending files: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+# backend/routers/memories.py 의 update_memory 함수 부분
 
 @router.put("/{memory_id}")
 def update_memory(memory_id: str, payload: UpdateMemoryRequest):
-    """추억 앨범 텍스트 정보 업데이트 및 버전 히스토리 자동 생성"""
+    """추억 앨범 텍스트 정보 업데이트 및 대분류(유년시절/여행) 물리 폴더 자동 이동"""
     old_history = []
+    current_mode = None
+    current_category = "미분류"
+
     with get_db_cursor() as cursor:
         cursor.execute("SELECT * FROM memories WHERE id = ?", (memory_id,))
         row = cursor.fetchone()
@@ -260,78 +274,93 @@ def update_memory(memory_id: str, payload: UpdateMemoryRequest):
                 except Exception:
                     pass
 
-            is_same = (
-                (payload.title is None or payload.title == row["title"]) and
-                (payload.location is None or payload.location == row["location"]) and
-                (payload.yearEstimate is None or payload.yearEstimate == row["year_estimate"]) and
-                (payload.description is None or payload.description == row["description"]) and
-                (payload.storyCaption is None or payload.storyCaption == row["story_caption"])
-            )
+            current_category = row["category_folder"] or "미분류"
 
-            if not is_same and (row["title"] or row["description"] or row["story_caption"]):
-                last_item = old_history[-1] if old_history else None
-                is_duplicate_with_last = False
-                if last_item:
-                    if (
-                        last_item.get("title") == (row["title"] or "") and
-                        last_item.get("location") == (row["location"] or "") and
-                        last_item.get("yearEstimate") == (row["year_estimate"] or "") and
-                        last_item.get("description") == (row["description"] or "") and
-                        last_item.get("storyCaption") == (row["story_caption"] or "")
-                    ):
-                        is_duplicate_with_last = True
-
-                if not is_duplicate_with_last:
-                    old_history.append({
-                        "version": len(old_history) + 1,
-                        "timestamp": int(time.time() * 1000),
-                        "title": row["title"] or "",
-                        "location": row["location"] or "",
-                        "yearEstimate": row["year_estimate"] or "",
-                        "description": row["description"] or "",
-                        "storyCaption": row["story_caption"] or ""
-                    })
-
-            update_fields = ["history_json = ?"]
-            values = [json.dumps(old_history, ensure_ascii=False)]
+            update_fields = []
+            values = []
 
             if payload.title is not None: update_fields.append("title = ?"); values.append(payload.title)
             if payload.location is not None: update_fields.append("location = ?"); values.append(payload.location)
             if payload.yearEstimate is not None: update_fields.append("year_estimate = ?"); values.append(payload.yearEstimate)
             if payload.description is not None: update_fields.append("description = ?"); values.append(payload.description)
             if payload.storyCaption is not None: update_fields.append("story_caption = ?"); values.append(payload.storyCaption)
-            if payload.categoryFolder is not None: update_fields.append("category_folder = ?"); values.append(payload.categoryFolder)
+            if payload.categoryFolder is not None: 
+                update_fields.append("category_folder = ?")
+                values.append(payload.categoryFolder)
+                current_category = payload.categoryFolder
 
-            values.append(memory_id)
-            cursor.execute(f"UPDATE memories SET {', '.join(update_fields)} WHERE id = ?", tuple(values))
+            if update_fields:
+                values.append(memory_id)
+                cursor.execute(f"UPDATE memories SET {', '.join(update_fields)} WHERE id = ?", tuple(values))
 
+    # 🌟 1. 물리 앨범 폴더 위치 탐색
     album_folder_path = find_album_folder_path(memory_id)
-    if album_folder_path:
-        meta = read_album_meta(album_folder_path)
-        if not row and "history" in meta:
-            old_history = meta.get("history", [])
+    if not album_folder_path or not os.path.exists(album_folder_path):
+        raise HTTPException(status_code=404, detail="디스크에서 앨범 폴더를 찾을 수 없습니다.")
 
-        an = meta.get("analysis", {})
-        if payload.title is not None: an["title"] = payload.title
-        if payload.location is not None: an["location"] = payload.location
-        if payload.yearEstimate is not None: an["yearEstimate"] = payload.yearEstimate
-        if payload.description is not None: an["description"] = payload.description
-        if payload.storyCaption is not None: an["storyCaption"] = payload.storyCaption
-        if payload.categoryFolder is not None: meta["categoryFolder"] = payload.categoryFolder
-        meta["analysis"] = an
-        meta["history"] = old_history
+    meta = read_album_meta(album_folder_path) or {}
 
-        write_album_meta(album_folder_path, meta)
+    # 🌟 2. 목표 대분류(유년시절 vs 여행) 산출
+    target_mode = payload.mode or meta.get("mode") or "childhood"
+    target_root_cat = "유년시절" if target_mode == "childhood" else "여행"
+    target_sub_folder = payload.categoryFolder or meta.get("categoryFolder") or current_category or "미분류"
 
-    return {"status": "success", "history": old_history}
+    # 목표 디렉터리 경로: backend/albums/{유년시절|여행}/{서브폴더}/{memory_id}
+    target_parent_dir = os.path.join(ALBUMS_DIR, target_root_cat, target_sub_folder)
+    target_album_path = os.path.join(target_parent_dir, memory_id)
 
+    # 🌟 3. 현재 위치와 목표 위치가 다르면 실제 물리 디스크 이동 실행!
+    if os.path.abspath(album_folder_path) != os.path.abspath(target_album_path):
+        print(f"\n🚚 [앨범 물리 폴더 대분류 자동 이동]")
+        print(f"   - 기존 경로: {album_folder_path}")
+        print(f"   - 이동 경로: {target_album_path}")
+        
+        os.makedirs(target_parent_dir, exist_ok=True)
+        shutil.move(album_folder_path, target_album_path)
+        album_folder_path = target_album_path
+
+        # 이동 후 relative prefix 갱신 및 imageUrls 갱신
+        new_prefix = f"{target_root_cat}/{target_sub_folder}/{memory_id}"
+        old_image_urls = meta.get("imageUrls", [])
+        new_image_urls = []
+        for u in old_image_urls:
+            fname = os.path.basename(u.split("?")[0])
+            new_image_urls.append(f"http://localhost:8000/albums/{new_prefix}/{fname}")
+        meta["imageUrls"] = new_image_urls
+
+        # DB imageUrls 동기화
+        with get_db_cursor() as cursor:
+            cursor.execute(
+                "UPDATE memories SET image_urls_json = ? WHERE id = ?",
+                (json.dumps(new_image_urls, ensure_ascii=False), memory_id)
+            )
+
+    # 🌟 4. album_meta.json 갱신
+    an = meta.get("analysis", {})
+    if payload.title is not None: an["title"] = payload.title
+    if payload.location is not None: an["location"] = payload.location
+    if payload.yearEstimate is not None: an["yearEstimate"] = payload.yearEstimate
+    if payload.description is not None: an["description"] = payload.description
+    if payload.storyCaption is not None: an["storyCaption"] = payload.storyCaption
+    
+    meta["mode"] = target_mode
+    meta["rootCategory"] = target_root_cat
+    meta["categoryFolder"] = target_sub_folder
+    meta["analysis"] = an
+    if payload.curatedNote is not None: meta["curatedNote"] = payload.curatedNote
+    if payload.interviewData is not None: meta["interviewData"] = payload.interviewData
+
+    write_album_meta(album_folder_path, meta)
+    print(f"💾 [앨범 대분류 동기화 완료]: mode={target_mode}, rootCategory={target_root_cat}\n")
+
+    return {"status": "success", "mode": target_mode, "rootCategory": target_root_cat}
 
 @router.post("/{memory_id}/enhance-image")
 async def enhance_single_image(
     memory_id: str,
     targetImageUrl: str = Form(...)
 ):
-    """YouCam AI 초고화질 개선 (Super Resolution) - 연쇄 작업 완벽 지원"""
+    """YouCam AI 초고화질 개선 (Super Resolution)"""
     try:
         local_file_path = find_local_media_path(targetImageUrl)
         new_enhanced_url = enhance_image_with_youcam(local_file_path, memory_id)
@@ -351,7 +380,7 @@ async def colorize_single_image(
     memory_id: str,
     targetImageUrl: str = Form(...)
 ):
-    """🎨 YouCam AI 흑백 사진 컬러 복원 (Colorize) - 연쇄 작업 완벽 지원"""
+    """🎨 YouCam AI 흑백 사진 컬러 복원 (Colorize)"""
     try:
         local_file_path = find_local_media_path(targetImageUrl)
         new_colorized_url = colorize_image_with_youcam(local_file_path, memory_id)
@@ -460,7 +489,7 @@ def delete_single_album_image(memory_id: str, payload: DeleteImageRequest):
 
 @router.delete("/{memory_id}/history/{version}")
 def delete_history_version(memory_id: str, version: int):
-    """특정 분석 버전 히스토리 삭제 및 버전 번호 순차 자동 재정렬 (1, 2, 3...)"""
+    """특정 분석 버전 히스토리 삭제 및 버전 번호 순차 자동 재정렬"""
     old_history = []
     with get_db_cursor() as cursor:
         cursor.execute("SELECT * FROM memories WHERE id = ?", (memory_id,))

@@ -13,20 +13,20 @@
     "image_9.jpg"
   ],
   "imageUrls": [
-    "http://localhost:8000/albums/승우 여행사진/album_1787897733143/image_0.jpg",
-    "http://localhost:8000/albums/승우 여행사진/album_1787897733143/image_1.jpg",
-    "http://localhost:8000/albums/승우 여행사진/album_1787897733143/image_2.jpg",
-    "http://localhost:8000/albums/승우 여행사진/album_1787897733143/image_3.jpg",
-    "http://localhost:8000/albums/승우 여행사진/album_1787897733143/image_4.jpg",
-    "http://localhost:8000/albums/승우 여행사진/album_1787897733143/image_5.jpg",
-    "http://localhost:8000/albums/승우 여행사진/album_1787897733143/image_6.jpg",
-    "http://localhost:8000/albums/승우 여행사진/album_1787897733143/image_7.jpg",
-    "http://localhost:8000/albums/승우 여행사진/album_1787897733143/image_8.jpg",
-    "http://localhost:8000/albums/승우 여행사진/album_1787897733143/image_9.jpg"
+    "http://localhost:8000/albums/지인사진폴더/album_1787897733143/image_0.jpg",
+    "http://localhost:8000/albums/지인사진폴더/album_1787897733143/image_1.jpg",
+    "http://localhost:8000/albums/지인사진폴더/album_1787897733143/image_2.jpg",
+    "http://localhost:8000/albums/지인사진폴더/album_1787897733143/image_3.jpg",
+    "http://localhost:8000/albums/지인사진폴더/album_1787897733143/image_4.jpg",
+    "http://localhost:8000/albums/지인사진폴더/album_1787897733143/image_5.jpg",
+    "http://localhost:8000/albums/지인사진폴더/album_1787897733143/image_6.jpg",
+    "http://localhost:8000/albums/지인사진폴더/album_1787897733143/image_7.jpg",
+    "http://localhost:8000/albums/지인사진폴더/album_1787897733143/image_8.jpg",
+    "http://localhost:8000/albums/지인사진폴더/album_1787897733143/image_9.jpg"
   ],
   "audioFileName": null,
   "audioUrl": null,
-  "categoryFolder": "승우 여행사진",
+  "categoryFolder": "지인사진폴더",
   "analysis": {
     "title": "청춘을 싣고 달린 강릉 밤바다",
     "location": "강원도 강릉 (안목해변 및 아르떼뮤지엄)",
