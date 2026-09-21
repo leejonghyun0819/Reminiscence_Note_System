@@ -151,21 +151,24 @@ def get_backup_albums():
 
                     rel_parts = os.path.relpath(root, ALBUMS_DIR).split(os.sep)
 
-                    detected_root = "여행"
+                    detected_root = None
                     if len(rel_parts) >= 2 and rel_parts[0] in ROOT_CATEGORIES:
                         detected_root = rel_parts[0]
                         if not meta.get("categoryFolder"):
                             meta["categoryFolder"] = rel_parts[1]
                     else:
+                        # 유년/여행 구조가 생기기 전에 만들어진 레거시 앨범은
+                        # 임의로 여행으로 지정하지 않고 미분류 상태를 유지한다.
                         parent_name = os.path.basename(os.path.dirname(root))
                         if parent_name != "albums" and not meta.get("categoryFolder"):
                             meta["categoryFolder"] = parent_name
                         else:
                             meta["categoryFolder"] = meta.get("categoryFolder") or "미분류"
 
-                    if not meta.get("mode"):
+                    if not meta.get("mode") and detected_root:
                         meta["mode"] = "childhood" if detected_root == "유년시절" else "travel"
-                    meta["rootCategory"] = meta.get("rootCategory") or detected_root
+                    if not meta.get("rootCategory") and detected_root:
+                        meta["rootCategory"] = detected_root
 
                     albums_list.append(meta)
 
