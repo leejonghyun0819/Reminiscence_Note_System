@@ -222,10 +222,20 @@ def restore_memory_from_meta(folder_path: str, cursor: sqlite3.Cursor) -> Option
     root_category = meta.get("rootCategory")
 
     if mode not in ("travel", "childhood"):
-        mode = "childhood" if root_category == "유년시절" else "travel"
+        if root_category == "유년시절":
+            mode = "childhood"
+        elif root_category == "여행":
+            mode = "travel"
+        else:
+            mode = None
 
     if root_category not in ("유년시절", "여행"):
-        root_category = "유년시절" if mode == "childhood" else "여행"
+        if mode == "childhood":
+            root_category = "유년시절"
+        elif mode == "travel":
+            root_category = "여행"
+        else:
+            root_category = None
 
     cursor.execute("""
         INSERT INTO memories (
