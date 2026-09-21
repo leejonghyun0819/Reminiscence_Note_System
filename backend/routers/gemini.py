@@ -1,205 +1,791 @@
 # backend/routers/gemini.py
+
 import os
 import glob
 import base64
 import json
-import re
 from typing import List, Optional
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
 from urllib.parse import unquote
+
+from fastapi import (
+    APIRouter,
+    HTTPException,
+)
+
+from pydantic import (
+    BaseModel,
+    Field,
+)
+
+from config import ALBUMS_DIR
 
 from services.gemini_service import (
     analyze_multimodal_memory,
     generate_memory_interview,
     generate_memory_interview_batch,
     build_curated_memory_note,
-    detect_memory_mode,
     detect_memory_mode_batch,
 )
-from utils.file_utils import ALBUMS_DIR
 
-router = APIRouter(prefix="/api/gemini", tags=["gemini"])
+from utils.file_utils import (
+    find_album_folder_path,
+)
+
+
+router = APIRouter(
+    prefix="/api/gemini",
+    tags=["gemini"]
+)
+
+
+# ============================================================
+# Request Models
+# ============================================================
 
 class ImageItem(BaseModel):
     base64: str
-    mimeType: str = "image/jpeg"
+    mimeType: str = (
+        "image/jpeg"
+    )
+
 
 class AnalyzeRequest(BaseModel):
-    images: List[ImageItem] = []
+
+    images: List[ImageItem] = Field(
+        default_factory=list
+    )
+
     audio_base64: Optional[str] = None
+
     audio_mime: Optional[str] = None
 
+
 class InterviewRequest(BaseModel):
-    images: List[ImageItem] = []
+
+    images: List[ImageItem] = Field(
+        default_factory=list
+    )
+
 
 class AlbumInterviewRequest(BaseModel):
+
     memoryId: Optional[str] = None
+
     albumId: Optional[str] = None
-    imageUrls: Optional[List[str]] = None
+
+    imageUrls: Optional[
+        List[str]
+    ] = None
+
 
 class QAPairItem(BaseModel):
+
     id: str
-    category: Optional[str] = "기억의 열쇠"
+
+    category: Optional[str] = (
+        "기억의 열쇠"
+    )
+
     question: str
+
     answer: str
 
+
 class FactsAndCluesPayload(BaseModel):
-    estimatedEra: Optional[str] = "시기 미상"
+
+    estimatedEra: Optional[str] = (
+        "시기 미상"
+    )
+
     sceneFacts: Optional[str] = ""
-    visualClues: Optional[List[str]] = []
+
+    visualClues: List[str] = Field(
+        default_factory=list
+    )
+
 
 class CurateRequest(BaseModel):
+
     factsAndClues: FactsAndCluesPayload
-    qaPairs: List[QAPairItem]
 
-@router.post("/detect-mode")
-async def detect_mode_endpoint(req: InterviewRequest):
-    try:
-        if not req.images:
-            return {"mode": "travel"}
-        images_payload = [{"base64": img.base64, "mimeType": img.mimeType} for img in req.images]
-        mode, _ = await detect_memory_mode_batch(images_payload)
-        return {"mode": mode}
-    except Exception as e:
-        print(f"⚠️ [detect-mode 오류]: {e}")
-        return {"mode": "travel"}
+    qaPairs: List[QAPairItem] = Field(
+        default_factory=list
+    )
 
-@router.post("/analyze")
-@router.post("/analyze-multimodal")
-async def analyze_memory_endpoint(req: AnalyzeRequest):
-    try:
-        if not req.images:
-            raise HTTPException(status_code=400, detail="최소 1장 이상의 이미지가 필요합니다.")
-        images_payload = [{"base64": img.base64, "mimeType": img.mimeType} for img in req.images]
-        analysis_result = await analyze_multimodal_memory(
-            images_data=images_payload,
-            audio_base64=req.audio_base64,
-            audio_mime=req.audio_mime
+
+# ============================================================
+# Helpers
+# ============================================================
+
+def _image_items_to_payload(
+    images: List[ImageItem]
+) -> list[dict]:
+
+    return [
+        {
+            "base64": image.base64,
+            "mimeType": (
+                image.mimeType
+                or "image/jpeg"
+            )
+        }
+        for image in images
+    ]
+
+
+def _find_album_folder(
+    target_id: str
+) -> Optional[str]:
+
+    # 먼저 공통 helper 사용
+    folder = find_album_folder_path(
+        target_id
+    )
+
+    if (
+        folder
+        and os.path.exists(folder)
+    ):
+        return folder
+
+    # fallback:
+    # album_meta.json의 id까지 탐색
+    if not os.path.exists(
+        ALBUMS_DIR
+    ):
+        return None
+
+    for root, _, files in os.walk(
+        ALBUMS_DIR
+    ):
+
+        if (
+            os.path.basename(root)
+            == target_id
+        ):
+            return root
+
+        if (
+            "album_meta.json"
+            not in files
+        ):
+            continue
+
+        meta_path = os.path.join(
+            root,
+            "album_meta.json"
         )
-        return {"success": True, "analysis": analysis_result}
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"❌ [멀티모달 분석 오류]: {e}")
-        raise HTTPException(status_code=500, detail=f"멀티모달 분석 실패: {str(e)}")
 
-@router.post("/interview")
-@router.post("/generate-interview")
-async def generate_interview_endpoint(req: InterviewRequest):
+        try:
+
+            with open(
+                meta_path,
+                "r",
+                encoding="utf-8"
+            ) as file:
+
+                meta = json.load(
+                    file
+                )
+
+            meta_id = str(
+                meta.get(
+                    "id",
+                    ""
+                )
+            )
+
+            if (
+                meta_id
+                == target_id
+            ):
+                return root
+
+        except Exception:
+            continue
+
+    return None
+
+
+def _collect_album_images(
+    album_folder: str
+) -> list[str]:
+
+    image_files = []
+
+    extensions = (
+        "*.jpg",
+        "*.jpeg",
+        "*.png",
+        "*.webp",
+        "*.JPG",
+        "*.JPEG",
+        "*.PNG",
+        "*.WEBP",
+    )
+
+    for extension in extensions:
+
+        image_files.extend(
+            glob.glob(
+                os.path.join(
+                    album_folder,
+                    extension
+                )
+            )
+        )
+
+    # 중복 제거
+    image_files = list(
+        dict.fromkeys(
+            image_files
+        )
+    )
+
+    return image_files
+
+
+# ============================================================
+# Mode Detection
+# ============================================================
+
+@router.post(
+    "/detect-mode"
+)
+async def detect_mode_endpoint(
+    req: InterviewRequest
+):
+
+    if not req.images:
+
+        return {
+            "mode": "travel"
+        }
+
     try:
-        if not req.images:
-            raise HTTPException(status_code=400, detail="질문을 도출할 이미지가 필요합니다.")
-        images_payload = [{"base64": img.base64, "mimeType": img.mimeType} for img in req.images]
-        interview_result = await generate_memory_interview(images_data=images_payload)
-        return interview_result
-    except HTTPException:
-        raise
+
+        images_payload = (
+            _image_items_to_payload(
+                req.images
+            )
+        )
+
+        mode, analyses = (
+            await detect_memory_mode_batch(
+                images_payload
+            )
+        )
+
+        return {
+            "mode": mode,
+            "photoAnalyses": analyses,
+        }
+
     except Exception as e:
-        print(f"❌ [인터뷰 생성 오류]: {e}")
-        raise HTTPException(status_code=500, detail=f"인터뷰 생성 실패: {str(e)}")
 
-@router.post("/interview-from-album")
-async def generate_interview_from_existing_album(req: AlbumInterviewRequest):
+        print(
+            "❌ [/detect-mode] "
+            "최종 예외"
+        )
+
+        print(
+            "   Exception Type: "
+            f"{type(e).__name__}"
+        )
+
+        print(
+            "   Exception repr: "
+            f"{repr(e)}"
+        )
+
+        # 기존 frontend 호환 유지
+        return {
+            "mode": "travel"
+        }
+
+
+# ============================================================
+# Multimodal Analysis
+# ============================================================
+
+@router.post(
+    "/analyze"
+)
+@router.post(
+    "/analyze-multimodal"
+)
+async def analyze_memory_endpoint(
+    req: AnalyzeRequest
+):
+
+    if not req.images:
+
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "최소 1장 이상의 이미지가 필요합니다."
+            )
+        )
+
     try:
-        raw_target_id = req.memoryId or req.albumId or ""
-        print(f"\n==========================================")
-        print(f"🔍 [기존 앨범 인터뷰 재분석 요청 수신] Raw Target ID: {raw_target_id}")
 
-        clean_target_id = raw_target_id
-        match = re.search(r"(album_\d+)", raw_target_id)
-        if match:
-            clean_target_id = match.group(1)
+        images_payload = (
+            _image_items_to_payload(
+                req.images
+            )
+        )
+
+        analysis_result = (
+            await analyze_multimodal_memory(
+                images_data=(
+                    images_payload
+                ),
+                audio_base64=(
+                    req.audio_base64
+                ),
+                audio_mime=(
+                    req.audio_mime
+                ),
+            )
+        )
+
+        return {
+            "success": True,
+            "analysis": (
+                analysis_result
+            ),
+        }
+
+    except Exception as e:
+
+        print(
+            "❌ [멀티모달 분석 오류]"
+        )
+
+        print(
+            f"   Type: "
+            f"{type(e).__name__}"
+        )
+
+        print(
+            f"   repr: "
+            f"{repr(e)}"
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "멀티모달 분석 실패: "
+                f"{type(e).__name__}"
+            )
+        )
+
+
+# ============================================================
+# New Interview
+# ============================================================
+
+@router.post(
+    "/interview"
+)
+@router.post(
+    "/generate-interview"
+)
+async def generate_interview_endpoint(
+    req: InterviewRequest
+):
+
+    if not req.images:
+
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "질문을 도출할 이미지가 필요합니다."
+            )
+        )
+
+    try:
+
+        images_payload = (
+            _image_items_to_payload(
+                req.images
+            )
+        )
+
+        result = (
+            await generate_memory_interview(
+                images_payload
+            )
+        )
+
+        return result
+
+    except Exception as e:
+
+        print(
+            "❌ [인터뷰 생성 오류]"
+        )
+
+        print(
+            f"   Type: "
+            f"{type(e).__name__}"
+        )
+
+        print(
+            f"   repr: "
+            f"{repr(e)}"
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "인터뷰 생성 실패: "
+                f"{type(e).__name__}"
+            )
+        )
+
+
+# ============================================================
+# Existing Album Interview
+# ============================================================
+
+@router.post(
+    "/interview-from-album"
+)
+async def generate_interview_from_existing_album(
+    req: AlbumInterviewRequest
+):
+
+    raw_target_id = (
+        req.memoryId
+        or req.albumId
+        or ""
+    )
+
+    if not raw_target_id:
+
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "memoryId 또는 albumId가 필요합니다."
+            )
+        )
+
+    print(
+        "\n=========================================="
+    )
+
+    print(
+        "🔍 [기존 앨범 인터뷰 재분석 요청]"
+    )
+
+    print(
+        f"   Target ID: "
+        f"{raw_target_id}"
+    )
+
+    try:
+
+        target_album_folder = (
+            _find_album_folder(
+                raw_target_id
+            )
+        )
 
         image_files = []
-        target_album_folder = None
 
-        if os.path.exists(ALBUMS_DIR):
-            for root, dirs, files in os.walk(ALBUMS_DIR):
-                base = os.path.basename(root)
-                if base == clean_target_id or base == raw_target_id:
-                    target_album_folder = root
-                    break
-                if "album_meta.json" in files:
-                    try:
-                        with open(os.path.join(root, "album_meta.json"), "r", encoding="utf-8") as f:
-                            meta = json.load(f)
-                            m_id = str(meta.get("id", ""))
-                            if m_id == clean_target_id or m_id == raw_target_id or (match and match.group(1) in m_id):
-                                target_album_folder = root
-                                break
-                    except Exception:
-                        pass
+        if target_album_folder:
 
-        if target_album_folder and os.path.exists(target_album_folder):
-            print(f"📂 [대상 앨범 폴더 발견]: {target_album_folder}")
-            for ext in ("*.jpg", "*.jpeg", "*.png", "*.webp", "*.JPG", "*.JPEG", "*.PNG", "*.WEBP"):
-                image_files.extend(glob.glob(os.path.join(target_album_folder, ext)))
+            print(
+                "📂 [앨범 폴더 발견]"
+            )
 
-        if not image_files and req.imageUrls:
+            print(
+                f"   {target_album_folder}"
+            )
+
+            image_files = (
+                _collect_album_images(
+                    target_album_folder
+                )
+            )
+
+        # ----------------------------------------------------
+        # folder를 못 찾은 경우 URL fallback
+        # ----------------------------------------------------
+
+        if (
+            not image_files
+            and req.imageUrls
+        ):
+
+            print(
+                "🔄 imageUrls 기반 "
+                "fallback 탐색"
+            )
+
             for url in req.imageUrls:
-                decoded_url = unquote(url).split("?")[0]
-                path_part = ""
-                if "/albums/" in decoded_url:
-                    path_part = decoded_url.split("/albums/")[1].lstrip("/")
-                elif "/api/media/" in decoded_url:
-                    path_part = decoded_url.split("/api/media/")[1].lstrip("/")
 
-                if path_part:
-                    exact_path = os.path.join(ALBUMS_DIR, path_part)
-                    if os.path.exists(exact_path) and os.path.isfile(exact_path):
-                        image_files.append(exact_path)
+                decoded_url = (
+                    unquote(
+                        url
+                    )
+                    .split("?")[0]
+                )
 
-        image_files = list(dict.fromkeys(image_files))
+                if (
+                    "/albums/"
+                    not in decoded_url
+                ):
+                    continue
+
+                path_part = (
+                    decoded_url
+                    .split(
+                        "/albums/",
+                        1
+                    )[1]
+                    .lstrip("/")
+                )
+
+                exact_path = (
+                    os.path.join(
+                        ALBUMS_DIR,
+                        path_part
+                    )
+                )
+
+                if (
+                    os.path.isfile(
+                        exact_path
+                    )
+                ):
+                    image_files.append(
+                        exact_path
+                    )
+
+        image_files = list(
+            dict.fromkeys(
+                image_files
+            )
+        )
 
         if not image_files:
-            raise HTTPException(status_code=404, detail=f"앨범({raw_target_id})의 사진 파일을 찾을 수 없습니다.")
 
-        print(f"📸 [재분석 대상 이미지 파일 (총 {len(image_files)}장)]")
-        images_payload = []
-        for img_path in image_files:
-            with open(img_path, "rb") as f:
-                b64_data = base64.b64encode(f.read()).decode("utf-8")
-                ext_name = os.path.splitext(img_path)[1].lower().replace(".", "")
-                mime = "image/jpeg" if ext_name in ["jpg", "jpeg"] else f"image/{ext_name}"
-                images_payload.append({"base64": b64_data, "mimeType": mime})
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    f"앨범({raw_target_id})의 "
+                    "사진 파일을 찾을 수 없습니다."
+                )
+            )
 
-        detected_mode, photo_analyses = await detect_memory_mode_batch(images_data=images_payload)
-        interview_result = await generate_memory_interview_batch(
-            images_data=images_payload,
-            photo_analyses=photo_analyses
+        print(
+            "📸 [재분석 대상]"
         )
-        interview_result["detectedMode"] = detected_mode
+
+        print(
+            f"   총 {len(image_files)}장"
+        )
+
+        images_payload = []
+
+        for image_path in image_files:
+
+            with open(
+                image_path,
+                "rb"
+            ) as file:
+
+                encoded = (
+                    base64
+                    .b64encode(
+                        file.read()
+                    )
+                    .decode(
+                        "utf-8"
+                    )
+                )
+
+            extension = (
+                os.path.splitext(
+                    image_path
+                )[1]
+                .lower()
+            )
+
+            mime_type = (
+                "image/png"
+                if extension == ".png"
+                else (
+                    "image/webp"
+                    if extension == ".webp"
+                    else "image/jpeg"
+                )
+            )
+
+            images_payload.append({
+                "base64": encoded,
+                "mimeType": mime_type,
+            })
+
+        # ----------------------------------------------------
+        # 전체 사진 분류
+        # ----------------------------------------------------
+
+        detected_mode, photo_analyses = (
+            await detect_memory_mode_batch(
+                images_data=(
+                    images_payload
+                )
+            )
+        )
+
+        # ----------------------------------------------------
+        # 분석 결과 + 대표 사진으로 인터뷰 생성
+        # ----------------------------------------------------
+
+        interview_result = (
+            await generate_memory_interview_batch(
+                images_data=(
+                    images_payload
+                ),
+                photo_analyses=(
+                    photo_analyses
+                ),
+            )
+        )
+
+        interview_result[
+            "detectedMode"
+        ] = detected_mode
+
         return interview_result
 
     except HTTPException:
         raise
-    except Exception as e:
-        print(f"❌ [interview-from-album 오류]: {e}")
-        raise HTTPException(status_code=500, detail=f"과거 앨범 기반 인터뷰 생성 실패: {str(e)}")
 
-# 🌟 4단계 큐레이션 추억 노트 합성 엔드포인트 (상세 터미널 로그 적용)
-@router.post("/curate")
-@router.post("/curate-note")
-async def curate_memory_note_endpoint(req: CurateRequest):
-    print(f"\n=======================================================")
-    print(f"📥 [/api/gemini/curate 요청 수신]")
-    print(f"📌 추정 연대: {req.factsAndClues.estimatedEra}")
-    print(f"📌 시각적 사실: {req.factsAndClues.sceneFacts}")
-    print(f"📝 사용자 인터뷰 답변 목록 (총 {len(req.qaPairs)}개):")
-    for idx, qa in enumerate(req.qaPairs, start=1):
-        print(f"   [{idx}] [{qa.category}] {qa.question}")
-        print(f"       👉 답변: '{qa.answer}'")
-    print(f"=======================================================")
+    except Exception as e:
+
+        print(
+            "❌ [interview-from-album 오류]"
+        )
+
+        print(
+            f"   Type: "
+            f"{type(e).__name__}"
+        )
+
+        print(
+            f"   repr: "
+            f"{repr(e)}"
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "과거 앨범 기반 인터뷰 생성 실패: "
+                f"{type(e).__name__}"
+            )
+        )
+
+
+# ============================================================
+# Curation
+# ============================================================
+
+@router.post(
+    "/curate"
+)
+@router.post(
+    "/curate-note"
+)
+async def curate_memory_note_endpoint(
+    req: CurateRequest
+):
+
+    print(
+        "\n======================================================="
+    )
+
+    print(
+        "📥 [/api/gemini/curate 요청]"
+    )
+
+    print(
+        "📌 추정 연대: "
+        f"{req.factsAndClues.estimatedEra}"
+    )
+
+    print(
+        "📌 시각적 사실: "
+        f"{req.factsAndClues.sceneFacts}"
+    )
+
+    print(
+        "📝 사용자 인터뷰 답변: "
+        f"{len(req.qaPairs)}개"
+    )
+
+    for idx, qa in enumerate(
+        req.qaPairs,
+        start=1
+    ):
+
+        print(
+            f"   [{idx}] "
+            f"[{qa.category}] "
+            f"{qa.question}"
+        )
+
+        print(
+            f"       → {qa.answer}"
+        )
+
+    print(
+        "======================================================="
+    )
 
     try:
-        curated_note = await build_curated_memory_note(
-            facts_and_clues=req.factsAndClues.model_dump() if hasattr(req.factsAndClues, 'model_dump') else req.factsAndClues.dict(),
-            qa_pairs=[qa.model_dump() if hasattr(qa, 'model_dump') else qa.dict() for qa in req.qaPairs]
+
+        facts = (
+            req.factsAndClues.model_dump()
         )
+
+        pairs = [
+            qa.model_dump()
+            for qa in req.qaPairs
+        ]
+
+        curated_note = (
+            await build_curated_memory_note(
+                facts_and_clues=facts,
+                qa_pairs=pairs,
+            )
+        )
+
         return curated_note
-    except HTTPException:
-        raise
+
     except Exception as e:
-        print(f"❌ [큐레이션 노트 합성 라우터 에러]: {e}")
-        raise HTTPException(status_code=500, detail=f"추억 큐레이션 노트 합성 실패: {str(e)}")
+
+        print(
+            "❌ [큐레이션 라우터 오류]"
+        )
+
+        print(
+            f"   Type: "
+            f"{type(e).__name__}"
+        )
+
+        print(
+            f"   repr: "
+            f"{repr(e)}"
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "추억 큐레이션 노트 합성 실패: "
+                f"{type(e).__name__}"
+            )
+        )
