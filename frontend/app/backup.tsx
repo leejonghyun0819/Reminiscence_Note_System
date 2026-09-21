@@ -29,12 +29,14 @@ export interface ExtendedBackupAlbumMeta extends BackupAlbumMeta {
     interviewData?: any;
 }
 
+type BackupRootCategory = '유년시절' | '여행' | '미분류';
+
 export default function BackupPage({ onClose }: { onClose?: () => void }) {
     const router = useRouter();
     const { memoryList, appendActiveMemory, appendActiveMemories } = useMemory();
 
-    // 대분류 상태: '여행' vs '유년시절'
-    const [activeRootCategory, setActiveRootCategory] = useState<'여행' | '유년시절'>('유년시절');
+    // AI 분류가 없는 레거시 앨범은 별도의 미분류 보관함에서 관리한다.
+    const [activeRootCategory, setActiveRootCategory] = useState<BackupRootCategory>('유년시절');
 
     const [backupAlbums, setBackupAlbums] = useState<ExtendedBackupAlbumMeta[]>([]);
     const [folders, setFolders] = useState<string[]>([]);
@@ -452,29 +454,45 @@ export default function BackupPage({ onClose }: { onClose?: () => void }) {
         }
     };
 
-    // 🌟 1. 백엔드의 한글/영문 키를 모두 고려한 서브 폴더 목록 매핑
+    // 백엔드의 한글/영문 키를 모두 고려한 서브 폴더 목록 매핑
     const currentSubFolders =
         activeRootCategory === '유년시절'
             ? categorizedFolders['유년시절'] || categorizedFolders['childhood'] || []
-            : categorizedFolders['여행'] || categorizedFolders['travel'] || [];
+            : activeRootCategory === '여행'
+              ? categorizedFolders['여행'] || categorizedFolders['travel'] || []
+              : [];
 
-    // mode/rootCategory를 우선하며 큐레이션·인터뷰의 존재 여부는 분류 근거로 사용하지 않는다.
-    const filteredAlbums = backupAlbums.filter((album) => {
+    // 명시적인 mode를 최우선으로 사용하고 rootCategory, 저장 경로 순서로 보완한다.
+    // 어느 곳에서도 근거를 찾지 못한 과거 앨범만 '미분류'로 보낸다.
+    const resolveAlbumRoot = (album: ExtendedBackupAlbumMeta): BackupRootCategory => {
+        if (album.mode === 'travel') return '여행';
+        if (album.mode === 'childhood') return '유년시절';
+        if (album.rootCategory === '여행') return '여행';
+        if (album.rootCategory === '유년시절') return '유년시절';
+
         const hasTravelPath = album.imageUrls?.some(
             (u) => u.includes('/여행/') || u.includes('/travel/'),
         );
+        if (hasTravelPath) return '여행';
+
         const hasChildhoodPath = album.imageUrls?.some(
             (u) => u.includes('/유년시절/') || u.includes('/childhood/'),
         );
+        if (hasChildhoodPath) return '유년시절';
 
-        const albumRoot: '유년시절' | '여행' =
-            album.mode === 'travel' || album.rootCategory === '여행' || hasTravelPath
-                ? '여행'
-                : album.mode === 'childhood' || album.rootCategory === '유년시절' || hasChildhoodPath
-                  ? '유년시절'
-                  : '여행';
+        return '미분류';
+    };
 
-        if (albumRoot !== activeRootCategory) return false;
+    const rootCategoryCounts = backupAlbums.reduce<Record<BackupRootCategory, number>>(
+        (counts, album) => {
+            counts[resolveAlbumRoot(album)] += 1;
+            return counts;
+        },
+        { 유년시절: 0, 여행: 0, 미분류: 0 },
+    );
+
+    const filteredAlbums = backupAlbums.filter((album) => {
+        if (resolveAlbumRoot(album) !== activeRootCategory) return false;
 
         const folderMatch =
             selectedFolderTab === '전체'
@@ -503,7 +521,7 @@ export default function BackupPage({ onClose }: { onClose?: () => void }) {
                     <View style={{ flex: 1 }}>
                         <Text style={styles.title}>📦 추억 보관함 & 폴더 관리</Text>
                         <Text style={styles.subtitle}>
-                            보관된 추억들을 [여행]과 [유년 시절]로 구분하여 체계적으로 보관하고 관리합니다.
+                            보관된 추억을 [유년 시절], [여행], [미분류]로 나누어 관리합니다.
                         </Text>
                     </View>
                     <TouchableOpacity style={styles.closeBtn} onPress={handleCloseOrBack}>
@@ -526,7 +544,7 @@ export default function BackupPage({ onClose }: { onClose?: () => void }) {
                                 activeRootCategory === '유년시절' && styles.rootTabBtnTextActive,
                             ]}
                         >
-                            🧸 유년 시절 보관함
+                            {'🧸 유년 시절 (' + rootCategoryCounts['유년시절'] + ')'}
                         </Text>
                     </TouchableOpacity>
 
@@ -543,7 +561,24 @@ export default function BackupPage({ onClose }: { onClose?: () => void }) {
                                 activeRootCategory === '여행' && styles.rootTabBtnTextActive,
                             ]}
                         >
-                            ✈️ 여행 보관함
+                            {'✈️ 여행 (' + rootCategoryCounts['여행'] + ')'}
+                        </Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                        style={[styles.rootTabBtn, activeRootCategory === '미분류' && styles.rootTabBtnActive]}
+                        onPress={() => {
+                            setActiveRootCategory('미분류');
+                            setSelectedFolderTab('전체');
+                        }}
+                    >
+                        <Text
+                            style={[
+                                styles.rootTabBtnText,
+                                activeRootCategory === '미분류' && styles.rootTabBtnTextActive,
+                            ]}
+                        >
+                            {'❓ 미분류 (' + rootCategoryCounts['미분류'] + ')'}
                         </Text>
                     </TouchableOpacity>
                 </View>
@@ -566,12 +601,15 @@ export default function BackupPage({ onClose }: { onClose?: () => void }) {
                         )}
                     </View>
 
-                    <TouchableOpacity style={styles.createFolderBtn} onPress={() => setIsFolderModalOpen(true)}>
-                        <Text style={styles.createFolderBtnText}>{`📁 새 ${activeRootCategory} 폴더 +`}</Text>
-                    </TouchableOpacity>
+                    {activeRootCategory !== '미분류' && (
+                        <TouchableOpacity style={styles.createFolderBtn} onPress={() => setIsFolderModalOpen(true)}>
+                            <Text style={styles.createFolderBtnText}>{`📁 새 ${activeRootCategory} 폴더 +`}</Text>
+                        </TouchableOpacity>
+                    )}
                 </View>
 
-                {/* 폴더 탭 영역 */}
+                {/* 미분류는 과거 앨범을 한곳에서 정리하는 영역이므로 하위 폴더 탭을 만들지 않는다. */}
+                {activeRootCategory !== '미분류' && (
                 <View style={styles.folderTabWrapper}>
                     <MouseDragHorizontalScroll contentContainerStyle={{ gap: 8, paddingVertical: 4 }}>
                         <TouchableOpacity
@@ -634,6 +672,7 @@ export default function BackupPage({ onClose }: { onClose?: () => void }) {
                         })}
                     </MouseDragHorizontalScroll>
                 </View>
+                )}
 
                 {/* 툴바 */}
                 <View style={styles.toolbarRow}>
