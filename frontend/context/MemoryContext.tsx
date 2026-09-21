@@ -370,7 +370,14 @@ export const MemoryProvider: React.FC<{ children: React.ReactNode }> = ({ childr
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload),
             });
-            if (res.ok) {
+            if (!res.ok) {
+                const errorBody = await res.json().catch(() => ({}));
+                throw new Error(
+                    errorBody.detail || `추억 업데이트에 실패했습니다. (HTTP ${res.status})`,
+                );
+            }
+
+            {
                 const data = await res.json();
                 const nextHistory: MemoryHistoryItem[] = data.history || [];
                 setMemoryList((prev) =>
@@ -392,10 +399,9 @@ export const MemoryProvider: React.FC<{ children: React.ReactNode }> = ({ childr
                 );
                 return nextHistory;
             }
-            return null;
         } catch (e) {
             console.error('메모리 업데이트 실패:', e);
-            return null;
+            throw e;
         }
     };
 
