@@ -458,16 +458,21 @@ export default function BackupPage({ onClose }: { onClose?: () => void }) {
             ? categorizedFolders['유년시절'] || categorizedFolders['childhood'] || []
             : categorizedFolders['여행'] || categorizedFolders['travel'] || [];
 
-    // 🌟 2. 빈틈없는 대분류 판별 필터링 (mode, rootCategory, curatedNote, imageUrl 경로 모두 검사)
+    // mode/rootCategory를 우선하며 큐레이션·인터뷰의 존재 여부는 분류 근거로 사용하지 않는다.
     const filteredAlbums = backupAlbums.filter((album) => {
-        const hasChildhoodFlag =
-            album.mode === 'childhood' ||
-            album.rootCategory === '유년시절' ||
-            Boolean(album.curatedNote) ||
-            Boolean(album.interviewData) ||
-            album.imageUrls?.some((u) => u.includes('/유년시절/') || u.includes('/childhood/'));
+        const hasTravelPath = album.imageUrls?.some(
+            (u) => u.includes('/여행/') || u.includes('/travel/'),
+        );
+        const hasChildhoodPath = album.imageUrls?.some(
+            (u) => u.includes('/유년시절/') || u.includes('/childhood/'),
+        );
 
-        const albumRoot: '유년시절' | '여행' = hasChildhoodFlag ? '유년시절' : '여행';
+        const albumRoot: '유년시절' | '여행' =
+            album.mode === 'travel' || album.rootCategory === '여행' || hasTravelPath
+                ? '여행'
+                : album.mode === 'childhood' || album.rootCategory === '유년시절' || hasChildhoodPath
+                  ? '유년시절'
+                  : '여행';
 
         if (albumRoot !== activeRootCategory) return false;
 
