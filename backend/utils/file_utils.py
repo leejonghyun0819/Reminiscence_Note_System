@@ -52,14 +52,43 @@ def row_to_memory_dict(row: sqlite3.Row) -> Dict[str, Any]:
         except Exception:
             image_urls = []
 
+    # SQLite에 없는 분류/큐레이션 정보는 앨범 메타데이터에서 복원한다.
+    meta: Dict[str, Any] = {}
+    album_folder = find_album_folder_path(str(row["id"]))
+    if album_folder:
+        meta = read_album_meta(album_folder)
+
+    mode = meta.get("mode")
+    root_category = meta.get("rootCategory")
+    if mode not in ("travel", "childhood"):
+        if root_category == "유년시절":
+            mode = "childhood"
+        elif root_category == "여행":
+            mode = "travel"
+        else:
+            mode = None
+
+    if root_category not in ("유년시절", "여행"):
+        root_category = (
+            "유년시절"
+            if mode == "childhood"
+            else "여행"
+            if mode == "travel"
+            else None
+        )
+
     return {
         "id": row["id"],
+        "mode": mode,
+        "rootCategory": root_category,
         "fileNames": file_names,
         "imageUrls": image_urls,
         "audioFileName": row["audio_file_name"] if "audio_file_name" in row.keys() else None,
         "audioUrl": row["audio_url"] if "audio_url" in row.keys() else None,
         "categoryFolder": (row["category_folder"] if "category_folder" in row.keys() else None) or "미분류",
         "history": history_list,
+        "curatedNote": meta.get("curatedNote"),
+        "interviewData": meta.get("interviewData"),
         "analysis": {
             "title": row["title"] if "title" in row.keys() else "",
             "location": row["location"] if "location" in row.keys() else "",
@@ -76,26 +105,40 @@ def find_album_folder_path(target_id: str) -> Optional[str]:
     if not target_id or target_id == "undefined":
         return None
 
-    clean_id = target_id
-    if clean_id.startswith("restored_"):
-        clean_id = re.sub(r'_\d+$', '', clean_id.replace("restored_", ""))
-
-    direct_path = os.path.join(ALBUMS_DIR, clean_id)
+    direct_path = os.path.join(ALBUMS_DIR, target_id)
     if os.path.exists(os.path.join(direct_path, "album_meta.json")):
         return direct_path
 
+    # 복원 작업 ID: restored_<실제 폴더명>_<timestamp>
+    # DB의 작업 ID와 변경되지 않은 실제 폴더명을 연결한다.
     for root, _, files in os.walk(ALBUMS_DIR):
-        if "album_meta.json" in files:
-            folder_name = os.path.basename(root)
-            if folder_name in (clean_id, target_id):
+        if "album_meta.json" not in files:
+            continue
+
+        folder_name = os.path.basename(root)
+        if folder_name == target_id:
+            return root
+
+        restored_prefix = f"restored_{folder_name}_"
+        restored_suffix = target_id[len(restored_prefix):] if target_id.startswith(restored_prefix) else ""
+        if restored_suffix.isdigit():
+            return root
+
+        try:
+            with open(os.path.join(root, "album_meta.json"), "r", encoding="utf-8") as f:
+                meta = json.load(f)
+
+            meta_id = str(meta.get("id", ""))
+            if meta_id == target_id:
                 return root
-            try:
-                with open(os.path.join(root, "album_meta.json"), "r", encoding="utf-8") as f:
-                    meta = json.load(f)
-                    if meta.get("id") in (target_id, clean_id):
-                        return root
-            except Exception:
-                pass
+
+            meta_prefix = f"restored_{meta_id}_"
+            meta_suffix = target_id[len(meta_prefix):] if meta_id and target_id.startswith(meta_prefix) else ""
+            if meta_suffix.isdigit():
+                return root
+        except (OSError, json.JSONDecodeError, TypeError):
+            continue
+
     return None
 
 
@@ -175,6 +218,24 @@ def restore_memory_from_meta(folder_path: str, cursor: sqlite3.Cursor) -> Option
     audio_url = meta.get("audioUrl")
     category_folder = meta.get("categoryFolder", "미분류")
     history = meta.get("history", [])
+    mode = meta.get("mode")
+    root_category = meta.get("rootCategory")
+
+    if mode not in ("travel", "childhood"):
+        if root_category == "유년시절":
+            mode = "childhood"
+        elif root_category == "여행":
+            mode = "travel"
+        else:
+            mode = None
+
+    if root_category not in ("유년시절", "여행"):
+        if mode == "childhood":
+            root_category = "유년시절"
+        elif mode == "travel":
+            root_category = "여행"
+        else:
+            root_category = None
 
     cursor.execute("""
         INSERT INTO memories (
@@ -199,11 +260,15 @@ def restore_memory_from_meta(folder_path: str, cursor: sqlite3.Cursor) -> Option
 
     return {
         "id": new_id,
+        "mode": mode,
+        "rootCategory": root_category,
         "fileNames": file_names,
         "imageUrls": image_urls,
         "audioFileName": audio_file_name,
         "audioUrl": audio_url,
         "categoryFolder": category_folder,
         "history": history,
-        "analysis": analysis
+        "analysis": analysis,
+        "curatedNote": meta.get("curatedNote"),
+        "interviewData": meta.get("interviewData"),
     }
