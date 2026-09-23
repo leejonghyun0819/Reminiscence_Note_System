@@ -15,10 +15,10 @@ import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
 import { useMemory, MemoryItem } from '../../context/MemoryContext';
 import {
-    analyzeMultiImageMemoryWithGemini,
     generateMemoryInterview,
     generateInterviewFromExistingAlbum,
     detectMemoryMode,
+    InterviewAnswerItem,
     InterviewResponseData,
     CuratedNoteData,
 } from '../../services/geminiService';
@@ -181,40 +181,40 @@ export default function IndexScreen() {
 
         setIsProcessing(true);
         try {
-            const imagePayload = selectedImages.map((img) => ({
-                base64: img.base64,
-                mimeType: img.mimeType || 'image/jpeg',
+            const imagePayload = selectedImages.map((image) => ({
+                base64: image.base64,
+                mimeType: image.mimeType || 'image/jpeg',
             }));
 
-            setStatusMessage('사진의 시각적 특징과 연대를 전수 분석 중입니다...');
-            const detectedMode = await detectMemoryMode(imagePayload);
+            setStatusMessage('사진별 장면과 기억의 단서를 분석 중입니다...');
+            const modeDetection = await detectMemoryMode(imagePayload);
+            const detectedMode = modeDetection.mode;
 
-            if (detectedMode === 'childhood') {
-                setStatusMessage('유년 시절의 단서를 포착하여 인터뷰를 구성 중입니다...');
-                const interviewRes = await generateMemoryInterview(imagePayload);
-                setActiveEditingMemory(null);
-                setInitialAnswers({});
-                setInitialExtraStory('');
-                setInterviewData({ ...interviewRes, detectedMode: 'childhood' } as any);
-                setInterviewModalVisible(true);
-            } else {
-                setStatusMessage('여행 및 일상의 순간을 기록하는 중입니다...');
-                const res = await analyzeMultiImageMemoryWithGemini(
-                    imagePayload,
-                    selectedAudio ? { base64: selectedAudio.base64, mimeType: selectedAudio.mimeType } : undefined,
-                );
-                await addMultiImageMemoryToServer(
-                    selectedImages,
-                    selectedAudio,
-                    { ...res, mode: 'travel' },
-                    selectedFolder,
-                );
-                setSelectedImages([]);
-                setSelectedAudio(null);
-                Alert.alert('완료', '✈️ 여행/일상 추억 앨범이 등록되었습니다.');
-            }
-        } catch (err: any) {
-            Alert.alert('실패', err.message || '추억 분석 중 문제가 발생했습니다.');
+            setStatusMessage(
+                detectedMode === 'childhood'
+                    ? '유년 시절 사진의 구체적인 기억 질문을 구성 중입니다...'
+                    : '여행 사진의 장소와 순간을 되짚는 질문을 구성 중입니다...',
+            );
+
+            const interviewResult = await generateMemoryInterview(
+                imagePayload,
+                modeDetection.photoAnalyses,
+                detectedMode,
+            );
+
+            setActiveEditingMemory(null);
+            setInitialAnswers({});
+            setInitialExtraStory('');
+            setInterviewData({
+                ...interviewResult,
+                detectedMode,
+            });
+            setInterviewModalVisible(true);
+        } catch (error: any) {
+            Alert.alert(
+                '실패',
+                error?.message || '사진별 기억 질문을 만드는 중 문제가 발생했습니다.',
+            );
         } finally {
             setIsProcessing(false);
             setStatusMessage('');
@@ -257,26 +257,22 @@ export default function IndexScreen() {
     // 인터뷰 결과 큐레이션 완료 저장
     const handleInterviewComplete = async (
         curatedNote: CuratedNoteData,
-        qaPairs: Array<{ id: string; question: string; answer: string }>,
-        extraStory: string,
+        qaPairs: InterviewAnswerItem[],
+        _extraStory: string,
     ) => {
         if (!interviewData) return;
         setIsProcessing(true);
         setStatusMessage('인터뷰 답변을 바탕으로 추억 노트를 갱신 중...');
 
-        const finalMode = (interviewData as any).detectedMode || activeEditingMemory?.mode || 'childhood';
+        const finalMode =
+            interviewData.detectedMode || activeEditingMemory?.mode || 'childhood';
 
         try {
             const updatedInterviewData = {
                 estimatedEra: interviewData.estimatedEra,
                 sceneFacts: interviewData.sceneFacts,
                 visualClues: interviewData.visualClues,
-                questions: [
-                    ...qaPairs,
-                    ...(extraStory.trim()
-                        ? [{ id: 'extra_memory', category: '자유 회상', question: '추가 사연', answer: extraStory }]
-                        : []),
-                ],
+                questions: qaPairs,
             };
 
             if (activeEditingMemory) {
@@ -694,6 +690,13 @@ export default function IndexScreen() {
                         visualClues: interviewData.visualClues,
                     }}
                     questions={interviewData.interviewQuestions}
+                    imageUrls={
+                        activeEditingMemory
+                            ? activeEditingMemory.imageUrls
+                            : selectedImages
+                                  .map((image) => image.uri)
+                                  .filter((uri): uri is string => Boolean(uri))
+                    }
                     initialAnswers={initialAnswers}
                     initialExtraStory={initialExtraStory}
                     onComplete={handleInterviewComplete}

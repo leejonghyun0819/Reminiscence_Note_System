@@ -83,6 +83,12 @@ class PhotoAnalysisItem(BaseModel):
     photoIndex: int
     detected: str
     reason: str
+    observedFacts: List[str] = Field(
+        default_factory=list
+    )
+    memoryClues: List[str] = Field(
+        default_factory=list
+    )
 
 
 class PhotoClassificationResponse(BaseModel):
@@ -93,6 +99,9 @@ class InterviewQuestion(BaseModel):
     id: str
     category: str
     targetClue: str = ""
+    targetPhotoIndexes: List[int] = Field(
+        default_factory=list
+    )
     question: str
     quickOptions: List[str] = Field(
         default_factory=list
@@ -334,7 +343,13 @@ async def _generate_json(
                     dict
                 ):
 
-                    return parsed
+                    return (
+                        response_schema
+                        .model_validate(
+                            parsed
+                        )
+                        .model_dump()
+                    )
 
             if not response.text:
 
@@ -342,8 +357,16 @@ async def _generate_json(
                     "Gemini 응답의 text가 비어 있습니다."
                 )
 
-            return json.loads(
+            raw_result = json.loads(
                 response.text
+            )
+
+            return (
+                response_schema
+                .model_validate(
+                    raw_result
+                )
+                .model_dump()
             )
 
         except Exception as e:
@@ -407,6 +430,185 @@ async def _generate_json(
 
 
 # ============================================================
+# Photo-aware Interview Helpers
+# ============================================================
+
+def _select_representative_images(
+    images_data: list[dict],
+    max_images: int = 8,
+) -> list[tuple[int, dict]]:
+    total_count = len(images_data)
+
+    if total_count <= max_images:
+        return list(enumerate(images_data))
+
+    indexes = [
+        round(
+            i
+            * (total_count - 1)
+            / (max_images - 1)
+        )
+        for i in range(max_images)
+    ]
+
+    unique_indexes = list(
+        dict.fromkeys(indexes)
+    )
+
+    return [
+        (index, images_data[index])
+        for index in unique_indexes
+    ]
+
+
+def _append_labeled_images(
+    parts: List[types.Part],
+    indexed_images: list[tuple[int, dict]],
+) -> None:
+    for zero_based_index, image in indexed_images:
+        parts.append(
+            types.Part.from_text(
+                text=f"사진 {zero_based_index + 1}"
+            )
+        )
+        parts.append(
+            _image_part(image)
+        )
+
+
+def _normalize_interview_photo_indexes(
+    result: dict,
+    total_count: int,
+    fallback_photo_indexes: list[int],
+) -> dict:
+    if total_count <= 0:
+        return result
+
+    safe_fallback_indexes = [
+        photo_index
+        for photo_index in fallback_photo_indexes
+        if 1 <= photo_index <= total_count
+    ]
+
+    if not safe_fallback_indexes:
+        safe_fallback_indexes = [1]
+
+    normalized_questions = []
+
+    for question_position, question in enumerate(
+        result.get(
+            "interviewQuestions",
+            [],
+        )
+    ):
+        normalized_question = dict(
+            question
+        )
+
+        valid_indexes = []
+
+        for raw_index in normalized_question.get(
+            "targetPhotoIndexes",
+            [],
+        ):
+            if isinstance(
+                raw_index,
+                bool,
+            ):
+                continue
+
+            try:
+                photo_index = int(
+                    raw_index
+                )
+            except (
+                TypeError,
+                ValueError,
+            ):
+                continue
+
+            if (
+                1 <= photo_index <= total_count
+                and photo_index not in valid_indexes
+            ):
+                valid_indexes.append(
+                    photo_index
+                )
+
+        if not valid_indexes:
+            valid_indexes = [
+                safe_fallback_indexes[
+                    question_position
+                    % len(
+                        safe_fallback_indexes
+                    )
+                ]
+            ]
+
+        normalized_question[
+            "targetPhotoIndexes"
+        ] = valid_indexes
+
+        normalized_questions.append(
+            normalized_question
+        )
+
+    normalized_result = dict(
+        result
+    )
+
+    normalized_result[
+        "interviewQuestions"
+    ] = normalized_questions
+
+    return normalized_result
+
+
+def _format_photo_analysis_summary(
+    photo_analyses: list[dict],
+) -> str:
+    lines = []
+
+    for analysis in photo_analyses:
+        photo_index = (
+            analysis.get("globalPhotoIndex")
+            or analysis.get("photoIndex")
+        )
+
+        if not photo_index:
+            continue
+
+        observed_facts = analysis.get(
+            "observedFacts",
+            [],
+        ) or []
+        memory_clues = analysis.get(
+            "memoryClues",
+            [],
+        ) or []
+        reason = analysis.get(
+            "reason",
+            "",
+        )
+
+        lines.append(
+            f"- 사진 {photo_index}\n"
+            f"  관찰 사실: "
+            f"{'; '.join(observed_facts) if observed_facts else '세부 관찰 없음'}\n"
+            f"  기억 단서: "
+            f"{'; '.join(memory_clues) if memory_clues else reason or '단서 없음'}"
+        )
+
+    if not lines:
+        return (
+            "사진별 분석 단서가 없습니다. "
+            "함께 제공된 원본 사진에서 직접 단서를 찾으세요."
+        )
+
+    return "\n".join(lines)
+
+
+# ============================================================
 # Travel / Multimodal
 # ============================================================
 
@@ -462,28 +664,41 @@ async def analyze_multimodal_memory(
 # ============================================================
 
 async def generate_memory_interview(
-    images_data: list[dict]
+    images_data: list[dict],
+    photo_analyses: Optional[list[dict]] = None,
+    memory_mode: str = "childhood",
 ) -> dict:
 
     parts: List[types.Part] = []
 
-    for image in images_data[:6]:
+    indexed_images = _select_representative_images(
+        images_data,
+    )
 
-        parts.append(
-            _image_part(
-                image
-            )
-        )
+    _append_labeled_images(
+        parts,
+        indexed_images,
+    )
+
+    clues_summary = _format_photo_analysis_summary(
+        photo_analyses or [],
+    )
 
     parts.append(
         types.Part.from_text(
             text=build_new_interview_user_prompt(
-                len(images_data)
+                total_count=len(images_data),
+                clues_summary=clues_summary,
+                memory_mode=memory_mode,
+                provided_photo_indexes=[
+                    index + 1
+                    for index, _ in indexed_images
+                ],
             )
         )
     )
 
-    return await _generate_json(
+    result = await _generate_json(
         parts=parts,
         system_instruction=(
             INTERVIEW_GENERATION_PROMPT
@@ -494,6 +709,17 @@ async def generate_memory_interview(
         operation_name=(
             "신규 기억 인터뷰 생성"
         ),
+    )
+
+    return _normalize_interview_photo_indexes(
+        result=result,
+        total_count=len(
+            images_data
+        ),
+        fallback_photo_indexes=[
+            index + 1
+            for index, _ in indexed_images
+        ],
     )
 
 
@@ -638,7 +864,16 @@ async def _classify_images_once(
 
     parts: List[types.Part] = []
 
-    for image in images_data:
+    for local_index, image in enumerate(
+        images_data,
+        start=1,
+    ):
+
+        parts.append(
+            types.Part.from_text(
+                text=f"사진 {local_index}"
+            )
+        )
 
         parts.append(
             _image_part(
@@ -686,7 +921,34 @@ async def _classify_images_once(
             f"output={len(analyses)}"
         )
 
-    return analyses
+    expected_indexes = set(
+        range(
+            1,
+            len(images_data) + 1,
+        )
+    )
+
+    actual_indexes = {
+        item.get(
+            "photoIndex"
+        )
+        for item in analyses
+    }
+
+    if actual_indexes != expected_indexes:
+
+        raise ValueError(
+            "Gemini 사진 번호가 입력 순서와 일치하지 않습니다. "
+            f"expected={sorted(expected_indexes)}, "
+            f"actual={sorted(actual_indexes)}"
+        )
+
+    return sorted(
+        analyses,
+        key=lambda item: item[
+            "photoIndex"
+        ],
+    )
 
 
 async def _classify_chunk_adaptive(
@@ -722,9 +984,7 @@ async def _classify_chunk_adaptive(
 
         result = []
 
-        for local_idx, item in enumerate(
-            analyses
-        ):
+        for item in analyses:
 
             normalized = dict(
                 item
@@ -734,7 +994,10 @@ async def _classify_chunk_adaptive(
                 "globalPhotoIndex"
             ] = (
                 global_start_index
-                + local_idx
+                + normalized[
+                    "photoIndex"
+                ]
+                - 1
             )
 
             result.append(
@@ -1027,6 +1290,7 @@ async def detect_memory_mode_batch(
 async def generate_memory_interview_batch(
     images_data: list[dict],
     photo_analyses: list[dict],
+    memory_mode: str = "childhood",
 ) -> dict:
 
     total_count = len(
@@ -1036,98 +1300,43 @@ async def generate_memory_interview_batch(
     parts: List[types.Part] = []
 
     # ========================================================
-    # 대표 이미지 최대 6장
+    # 대표 이미지와 원본 앨범 번호 연결
     # ========================================================
 
-    if total_count <= 6:
+    indexed_images = _select_representative_images(
+        images_data,
+    )
 
-        target_images = (
-            images_data
-        )
-
-    else:
-
-        # 처음부터 끝까지 최대한 균등하게 선택
-        indexes = []
-
-        for i in range(6):
-
-            index = round(
-                i
-                * (
-                    total_count - 1
-                )
-                / 5
-            )
-
-            indexes.append(
-                index
-            )
-
-        indexes = list(
-            dict.fromkeys(
-                indexes
-            )
-        )
-
-        target_images = [
-            images_data[index]
-            for index in indexes
-        ]
-
-    for image in target_images:
-
-        parts.append(
-            _image_part(
-                image
-            )
-        )
+    _append_labeled_images(
+        parts,
+        indexed_images,
+    )
 
     # ========================================================
     # 분류 분석 결과 요약
     # ========================================================
 
-    clues = []
-
-    for analysis in photo_analyses:
-
-        if (
-            analysis.get(
-                "detected"
-            )
-            == "unknown"
-        ):
-            continue
-
-        clues.append(
-            "- 사진 "
-            f"{analysis.get('globalPhotoIndex')}: "
-            f"{analysis.get('reason', '')}"
-        )
-
-    clues_summary = (
-        "\n".join(
-            clues[:20]
-        )
-        if clues
-        else (
-            "분류 단계에서 유효한 "
-            "세부 단서를 얻지 못했습니다."
-        )
+    clues_summary = _format_photo_analysis_summary(
+        photo_analyses,
     )
 
     parts.append(
         types.Part.from_text(
             text=build_existing_album_interview_user_prompt(
-                total_count,
-                clues_summary,
+                total_count=total_count,
+                clues_summary=clues_summary,
+                memory_mode=memory_mode,
+                provided_photo_indexes=[
+                    index + 1
+                    for index, _ in indexed_images
+                ],
             )
         )
     )
 
     try:
 
-        return await _generate_json(
+        result = await _generate_json(
             parts=parts,
             system_instruction=(
                 INTERVIEW_GENERATION_PROMPT
@@ -1140,6 +1349,15 @@ async def generate_memory_interview_batch(
             ),
         )
 
+        return _normalize_interview_photo_indexes(
+            result=result,
+            total_count=total_count,
+            fallback_photo_indexes=[
+                index + 1
+                for index, _ in indexed_images
+            ],
+        )
+
     except Exception as e:
 
         print(
@@ -1149,6 +1367,16 @@ async def generate_memory_interview_batch(
         print(
             f"   {type(e).__name__}: "
             f"{repr(e)}"
+        )
+
+        first_photo = 1
+        second_photo = min(
+            2,
+            max(1, total_count),
+        )
+        last_photo = max(
+            1,
+            total_count,
         )
 
         return {
@@ -1174,10 +1402,13 @@ async def generate_memory_interview_batch(
                         "반복되던 일상"
                     ),
                     "targetClue": (
-                        "사진에 반복되는 공간"
+                        "사진 1에 보이는 공간"
                     ),
+                    "targetPhotoIndexes": [
+                        first_photo
+                    ],
                     "question": (
-                        "사진 속 공간에서 "
+                        f"사진 {first_photo}의 공간에서 "
                         "자주 하던 일이나 "
                         "반복되던 하루의 모습이 있었나요?"
                     ),
@@ -1195,10 +1426,13 @@ async def generate_memory_interview_batch(
                         "관계"
                     ),
                     "targetClue": (
-                        "사진에 등장하는 사람들"
+                        f"사진 {second_photo}에 등장하는 사람들"
                     ),
+                    "targetPhotoIndexes": [
+                        second_photo
+                    ],
                     "question": (
-                        "사진 속 사람들과 "
+                        f"사진 {second_photo} 속 사람들과 "
                         "당시 자주 함께했던 일 중 "
                         "지금도 떠오르는 장면이 있나요?"
                     ),
@@ -1216,10 +1450,13 @@ async def generate_memory_interview_batch(
                         "사진 밖의 이야기"
                     ),
                     "targetClue": (
-                        "사진에 기록된 당시 장면"
+                        f"사진 {last_photo}에 기록된 당시 장면"
                     ),
+                    "targetPhotoIndexes": [
+                        last_photo
+                    ],
                     "question": (
-                        "이 사진을 보면 "
+                        f"사진 {last_photo}를 보면 "
                         "사진을 찍기 전이나 "
                         "찍은 뒤에 있었던 일까지 "
                         "떠오르는 것이 있나요?"

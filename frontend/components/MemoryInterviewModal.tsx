@@ -1,24 +1,23 @@
 // frontend/components/MemoryInterviewModal.tsx
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
-    Modal,
-    View,
-    Text,
-    StyleSheet,
-    TouchableOpacity,
-    ScrollView,
-    TextInput,
     ActivityIndicator,
+    Alert,
+    Image,
+    Modal,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    View,
 } from 'react-native';
-import { CuratedNoteData, buildCuratedMemoryNote } from '../services/geminiService';
-
-interface InterviewQuestion {
-    id: string;
-    category: string;
-    targetClue?: string;
-    question: string;
-    quickOptions?: string[];
-}
+import {
+    buildCuratedMemoryNote,
+    CuratedNoteData,
+    InterviewAnswerItem,
+    InterviewQuestionItem,
+} from '../services/geminiService';
 
 interface FactsAndClues {
     estimatedEra?: string;
@@ -26,18 +25,44 @@ interface FactsAndClues {
     visualClues?: string[];
 }
 
+interface PreviewImage {
+    url: string;
+    photoNumber: number;
+}
+
 interface MemoryInterviewModalProps {
     visible: boolean;
     onClose: () => void;
     factsAndClues: FactsAndClues;
-    questions: InterviewQuestion[];
+    questions: InterviewQuestionItem[];
+    imageUrls: string[];
     initialAnswers?: Record<string, string>;
     initialExtraStory?: string;
     onComplete: (
         curatedNote: CuratedNoteData,
-        qaPairs: Array<{ id: string; question: string; answer: string }>,
+        qaPairs: InterviewAnswerItem[],
         extraStory: string,
     ) => void;
+}
+
+function getValidPhotoIndexes(
+    question: InterviewQuestionItem,
+    imageUrls: string[],
+): number[] {
+    const rawIndexes = Array.isArray(question.targetPhotoIndexes)
+        ? question.targetPhotoIndexes
+        : [];
+
+    return Array.from(
+        new Set(
+            rawIndexes.filter(
+                (photoIndex) =>
+                    Number.isInteger(photoIndex) &&
+                    photoIndex >= 1 &&
+                    photoIndex <= imageUrls.length,
+            ),
+        ),
+    );
 }
 
 export function MemoryInterviewModal({
@@ -45,6 +70,7 @@ export function MemoryInterviewModal({
     onClose,
     factsAndClues,
     questions = [],
+    imageUrls = [],
     initialAnswers = {},
     initialExtraStory = '',
     onComplete,
@@ -53,6 +79,7 @@ export function MemoryInterviewModal({
     const [extraStory, setExtraStory] = useState<string>('');
     const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
     const [statusText, setStatusText] = useState<string>('');
+    const [previewImage, setPreviewImage] = useState<PreviewImage | null>(null);
 
     useEffect(() => {
         if (visible) {
@@ -60,45 +87,57 @@ export function MemoryInterviewModal({
             setExtraStory(initialExtraStory || '');
             setIsSubmitting(false);
             setStatusText('');
+            setPreviewImage(null);
         }
     }, [visible, initialAnswers, initialExtraStory]);
 
-    const handleOptionSelect = (qId: string, option: string) => {
-        setAnswers((prev) => ({
-            ...prev,
-            [qId]: option,
+    const handleOptionSelect = (questionId: string, option: string) => {
+        setAnswers((previous) => ({
+            ...previous,
+            [questionId]: option,
         }));
     };
 
-    const handleTextChange = (qId: string, text: string) => {
-        setAnswers((prev) => ({
-            ...prev,
-            [qId]: text,
+    const handleTextChange = (questionId: string, text: string) => {
+        setAnswers((previous) => ({
+            ...previous,
+            [questionId]: text,
         }));
     };
 
     const handleSubmit = async () => {
         setIsSubmitting(true);
-        setStatusText('✍️ 답변을 바탕으로 4단계 추억 노트를 작성 중입니다...');
+        setStatusText('✍️ 사진별 답변을 바탕으로 추억 노트를 작성 중입니다...');
 
         try {
-            const qaPairs = questions.map((q) => ({
-                id: q.id,
-                category: q.category,
-                question: q.question,
-                answer: answers[q.id] || '기억 안 남',
-            }));
+            const qaPairs: InterviewAnswerItem[] = questions.map((question) => {
+                const targetPhotoIndexes = getValidPhotoIndexes(question, imageUrls);
+
+                return {
+                    id: question.id,
+                    category: question.category,
+                    targetClue: question.targetClue,
+                    targetPhotoIndexes,
+                    targetImageUrls: targetPhotoIndexes.map(
+                        (photoIndex) => imageUrls[photoIndex - 1],
+                    ),
+                    question: question.question,
+                    answer: answers[question.id]?.trim() || '기억 안 남',
+                };
+            });
 
             if (extraStory.trim()) {
                 qaPairs.push({
                     id: 'extra_memory',
                     category: '자유 회상',
+                    targetClue: '',
+                    targetPhotoIndexes: [],
+                    targetImageUrls: [],
                     question: '추가 사연',
                     answer: extraStory.trim(),
                 });
             }
 
-            // 🌟 geminiService.ts의 원래 함수명인 buildCuratedMemoryNote 호출
             const curatedNote = await buildCuratedMemoryNote(
                 {
                     estimatedEra: factsAndClues.estimatedEra || '시기 미상',
@@ -110,8 +149,11 @@ export function MemoryInterviewModal({
 
             setStatusText('✨ 추억 노트 완성! 적용 중...');
             onComplete(curatedNote, qaPairs, extraStory);
-        } catch (e: any) {
-            alert(`재분석 중 오류 발생: ${e.message || e}`);
+        } catch (error: any) {
+            Alert.alert(
+                '재분석 오류',
+                error?.message || '답변을 반영하는 중 문제가 발생했습니다.',
+            );
         } finally {
             setIsSubmitting(false);
             setStatusText('');
@@ -121,131 +163,293 @@ export function MemoryInterviewModal({
     if (!visible) return null;
 
     return (
-        <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-            <View style={styles.overlay}>
-                <View style={styles.container}>
-                    {/* 상단 헤더 */}
-                    <View style={styles.header}>
-                        <View style={{ flex: 1 }}>
-                            <Text style={styles.headerTitle}>💡 기억 인터뷰 및 재분석</Text>
-                            <Text style={styles.headerSubtitle}>
-                                기존 답변을 수정하거나 새로운 기억을 덧붙여 노트를 다시 작성할 수 있습니다.
-                            </Text>
-                        </View>
-                        <TouchableOpacity style={styles.closeBtn} onPress={onClose} disabled={isSubmitting}>
-                            <Text style={styles.closeBtnText}>✕</Text>
-                        </TouchableOpacity>
-                    </View>
-
-                    {/* 질문 목록 영역 */}
-                    <ScrollView style={styles.body} showsVerticalScrollIndicator={false}>
-                        {questions.map((q, idx) => {
-                            const currentAns = answers[q.id] || '';
-                            return (
-                                <View key={q.id || idx} style={styles.questionBlock}>
-                                    <View style={styles.categoryBadge}>
-                                        <Text style={styles.categoryBadgeText}>{q.category || '기억의 단서'}</Text>
-                                    </View>
-
-                                    <Text style={styles.questionText}>{`${idx + 1}. ${q.question}`}</Text>
-
-                                    {/* 빠른 선택 옵션 칩 */}
-                                    {q.quickOptions && q.quickOptions.length > 0 && (
-                                        <View style={styles.optionsRow}>
-                                            {q.quickOptions.map((opt, optIdx) => {
-                                                const isSelected = currentAns === opt;
-                                                return (
-                                                    <TouchableOpacity
-                                                        key={optIdx}
-                                                        style={[
-                                                            styles.optionChip,
-                                                            isSelected && styles.optionChipActive,
-                                                        ]}
-                                                        onPress={() => handleOptionSelect(q.id, opt)}
-                                                        disabled={isSubmitting}
-                                                    >
-                                                        <Text
-                                                            style={[
-                                                                styles.optionChipText,
-                                                                isSelected && styles.optionChipTextActive,
-                                                            ]}
-                                                        >
-                                                            {opt}
-                                                        </Text>
-                                                    </TouchableOpacity>
-                                                );
-                                            })}
-                                        </View>
-                                    )}
-
-                                    {/* 주관식 직접 입력창 */}
-                                    <TextInput
-                                        style={styles.input}
-                                        placeholder="직접 입력 (예: 골목길, 노란 장난감...)"
-                                        placeholderTextColor="#94A3B8"
-                                        value={answers[q.id] || ''}
-                                        onChangeText={(txt) => handleTextChange(q.id, txt)}
-                                        editable={!isSubmitting}
-                                    />
-                                </View>
-                            );
-                        })}
-
-                        {/* 자유 추가 회상 */}
-                        <View style={styles.questionBlock}>
-                            <View style={[styles.categoryBadge, { backgroundColor: '#FEF3C7' }]}>
-                                <Text style={[styles.categoryBadgeText, { color: '#B45309' }]}>자유 회상</Text>
+        <>
+            <Modal
+                visible={visible}
+                transparent
+                animationType="fade"
+                onRequestClose={onClose}
+            >
+                <View style={styles.overlay}>
+                    <View style={styles.container}>
+                        <View style={styles.header}>
+                            <View style={styles.headerTextArea}>
+                                <Text style={styles.headerTitle}>💡 사진을 보며 기억 인터뷰</Text>
+                                <Text style={styles.headerSubtitle}>
+                                    질문마다 연결된 사진을 눌러 크게 본 뒤, 떠오르는 기억을 남겨주세요.
+                                </Text>
                             </View>
-
-                            <Text style={styles.questionText}>
-                                {`${(questions?.length || 0) + 1}. 그 외에 떠오르는 사연이나 꼭 남기고 싶은 이야기가 있다면 자유롭게 적어주세요.`}
-                            </Text>
-
-                            <TextInput
-                                style={[styles.input, styles.multilineInput]}
-                                placeholder="예: 이 사진 찍고 나서 다 같이 중국집에 갔던 기억이 나요..."
-                                placeholderTextColor="#94A3B8"
-                                value={extraStory}
-                                onChangeText={setExtraStory}
-                                multiline
-                                editable={!isSubmitting}
-                            />
-                        </View>
-                    </ScrollView>
-
-                    {/* 하단 액션 버튼 바 및 진행 상태 */}
-                    <View style={styles.footer}>
-                        {isSubmitting && (
-                            <View style={styles.statusRow}>
-                                <ActivityIndicator size="small" color="#0284C7" />
-                                <Text style={styles.statusText}>{statusText}</Text>
-                            </View>
-                        )}
-
-                        <View style={styles.btnRow}>
-                            <TouchableOpacity style={styles.cancelBtn} onPress={onClose} disabled={isSubmitting}>
-                                <Text style={styles.cancelBtnText}>닫기</Text>
-                            </TouchableOpacity>
-
                             <TouchableOpacity
-                                style={[styles.submitBtn, isSubmitting && styles.submitBtnDisabled]}
-                                onPress={handleSubmit}
+                                style={styles.closeButton}
+                                onPress={onClose}
                                 disabled={isSubmitting}
+                                accessibilityRole="button"
+                                accessibilityLabel="인터뷰 닫기"
                             >
-                                {isSubmitting ? (
-                                    <View style={styles.loadingInner}>
-                                        <ActivityIndicator size="small" color="#FFFFFF" />
-                                        <Text style={styles.submitBtnText}>분석 합성 중...</Text>
-                                    </View>
-                                ) : (
-                                    <Text style={styles.submitBtnText}>✨ 인터뷰 반영 & 재분석</Text>
-                                )}
+                                <Text style={styles.closeButtonText}>✕</Text>
                             </TouchableOpacity>
+                        </View>
+
+                        <ScrollView
+                            style={styles.body}
+                            contentContainerStyle={styles.bodyContent}
+                            showsVerticalScrollIndicator={false}
+                        >
+                            {questions.length === 0 && (
+                                <View style={styles.emptyBlock}>
+                                    <Text style={styles.emptyText}>
+                                        생성된 질문이 없습니다. 잠시 후 다시 시도해주세요.
+                                    </Text>
+                                </View>
+                            )}
+
+                            {questions.map((question, questionIndex) => {
+                                const currentAnswer = answers[question.id] || '';
+                                const targetPhotoIndexes = getValidPhotoIndexes(
+                                    question,
+                                    imageUrls,
+                                );
+                                const photoLabel = targetPhotoIndexes
+                                    .map((photoIndex) => '사진 ' + photoIndex)
+                                    .join(', ');
+
+                                return (
+                                    <View
+                                        key={question.id || String(questionIndex)}
+                                        style={styles.questionBlock}
+                                    >
+                                        <View style={styles.badgeRow}>
+                                            <View style={styles.categoryBadge}>
+                                                <Text style={styles.categoryBadgeText}>
+                                                    {question.category || '기억의 단서'}
+                                                </Text>
+                                            </View>
+                                            {targetPhotoIndexes.length > 0 && (
+                                                <View style={styles.photoBadge}>
+                                                    <Text style={styles.photoBadgeText}>
+                                                        📷 {photoLabel}
+                                                    </Text>
+                                                </View>
+                                            )}
+                                        </View>
+
+                                        {question.targetClue ? (
+                                            <Text style={styles.targetClueText}>
+                                                살펴볼 단서 · {question.targetClue}
+                                            </Text>
+                                        ) : null}
+
+                                        {targetPhotoIndexes.length > 0 && (
+                                            <View style={styles.photoSection}>
+                                                <Text style={styles.photoGuideText}>
+                                                    사진을 누르면 크게 볼 수 있어요
+                                                </Text>
+                                                <ScrollView
+                                                    horizontal
+                                                    showsHorizontalScrollIndicator={false}
+                                                    contentContainerStyle={styles.photoStrip}
+                                                >
+                                                    {targetPhotoIndexes.map((photoIndex) => {
+                                                        const imageUrl = imageUrls[photoIndex - 1];
+
+                                                        return (
+                                                            <TouchableOpacity
+                                                                key={photoIndex}
+                                                                style={styles.thumbnailButton}
+                                                                activeOpacity={0.82}
+                                                                onPress={() =>
+                                                                    setPreviewImage({
+                                                                        url: imageUrl,
+                                                                        photoNumber: photoIndex,
+                                                                    })
+                                                                }
+                                                                disabled={isSubmitting}
+                                                                accessibilityRole="button"
+                                                                accessibilityLabel={
+                                                                    '사진 ' + photoIndex + ' 크게 보기'
+                                                                }
+                                                            >
+                                                                <Image
+                                                                    source={{ uri: imageUrl }}
+                                                                    style={styles.thumbnail}
+                                                                    resizeMode="cover"
+                                                                />
+                                                                <View style={styles.thumbnailNumber}>
+                                                                    <Text style={styles.thumbnailNumberText}>
+                                                                        {photoIndex}
+                                                                    </Text>
+                                                                </View>
+                                                            </TouchableOpacity>
+                                                        );
+                                                    })}
+                                                </ScrollView>
+                                            </View>
+                                        )}
+
+                                        <Text style={styles.questionText}>
+                                            {questionIndex + 1}. {question.question}
+                                        </Text>
+
+                                        {question.quickOptions &&
+                                            question.quickOptions.length > 0 && (
+                                                <View style={styles.optionsRow}>
+                                                    {question.quickOptions.map(
+                                                        (option, optionIndex) => {
+                                                            const isSelected =
+                                                                currentAnswer === option;
+
+                                                            return (
+                                                                <TouchableOpacity
+                                                                    key={
+                                                                        option +
+                                                                        String(optionIndex)
+                                                                    }
+                                                                    style={[
+                                                                        styles.optionChip,
+                                                                        isSelected &&
+                                                                            styles.optionChipActive,
+                                                                    ]}
+                                                                    onPress={() =>
+                                                                        handleOptionSelect(
+                                                                            question.id,
+                                                                            option,
+                                                                        )
+                                                                    }
+                                                                    disabled={isSubmitting}
+                                                                >
+                                                                    <Text
+                                                                        style={[
+                                                                            styles.optionChipText,
+                                                                            isSelected &&
+                                                                                styles.optionChipTextActive,
+                                                                        ]}
+                                                                    >
+                                                                        {option}
+                                                                    </Text>
+                                                                </TouchableOpacity>
+                                                            );
+                                                        },
+                                                    )}
+                                                </View>
+                                            )}
+
+                                        <TextInput
+                                            style={styles.input}
+                                            placeholder="사진을 보며 떠오른 기억을 직접 적어주세요."
+                                            placeholderTextColor="#94A3B8"
+                                            value={currentAnswer}
+                                            onChangeText={(text) =>
+                                                handleTextChange(question.id, text)
+                                            }
+                                            editable={!isSubmitting}
+                                        />
+                                    </View>
+                                );
+                            })}
+
+                            <View style={styles.questionBlock}>
+                                <View style={styles.freeRecallBadge}>
+                                    <Text style={styles.freeRecallBadgeText}>자유 회상</Text>
+                                </View>
+                                <Text style={styles.questionText}>
+                                    {questions.length + 1}. 그 외에 떠오르는 사연이나 꼭
+                                    남기고 싶은 이야기가 있다면 자유롭게 적어주세요.
+                                </Text>
+                                <TextInput
+                                    style={[styles.input, styles.multilineInput]}
+                                    placeholder="예: 이 사진을 찍고 나서 가족과 함께 식사했던 기억이 나요."
+                                    placeholderTextColor="#94A3B8"
+                                    value={extraStory}
+                                    onChangeText={setExtraStory}
+                                    multiline
+                                    editable={!isSubmitting}
+                                />
+                            </View>
+                        </ScrollView>
+
+                        <View style={styles.footer}>
+                            {isSubmitting && (
+                                <View style={styles.statusRow}>
+                                    <ActivityIndicator size="small" color="#0284C7" />
+                                    <Text style={styles.statusText}>{statusText}</Text>
+                                </View>
+                            )}
+
+                            <View style={styles.buttonRow}>
+                                <TouchableOpacity
+                                    style={styles.cancelButton}
+                                    onPress={onClose}
+                                    disabled={isSubmitting}
+                                >
+                                    <Text style={styles.cancelButtonText}>닫기</Text>
+                                </TouchableOpacity>
+                                <TouchableOpacity
+                                    style={[
+                                        styles.submitButton,
+                                        isSubmitting && styles.submitButtonDisabled,
+                                    ]}
+                                    onPress={handleSubmit}
+                                    disabled={isSubmitting || questions.length === 0}
+                                >
+                                    {isSubmitting ? (
+                                        <View style={styles.loadingInner}>
+                                            <ActivityIndicator
+                                                size="small"
+                                                color="#FFFFFF"
+                                            />
+                                            <Text style={styles.submitButtonText}>
+                                                노트 작성 중...
+                                            </Text>
+                                        </View>
+                                    ) : (
+                                        <Text style={styles.submitButtonText}>
+                                            ✨ 인터뷰 반영 & 노트 생성
+                                        </Text>
+                                    )}
+                                </TouchableOpacity>
+                            </View>
                         </View>
                     </View>
                 </View>
-            </View>
-        </Modal>
+            </Modal>
+
+            <Modal
+                visible={previewImage !== null}
+                transparent
+                animationType="fade"
+                onRequestClose={() => setPreviewImage(null)}
+            >
+                <View style={styles.previewOverlay}>
+                    <TouchableOpacity
+                        style={styles.previewBackdrop}
+                        activeOpacity={1}
+                        onPress={() => setPreviewImage(null)}
+                        accessibilityRole="button"
+                        accessibilityLabel="사진 확대 보기 닫기"
+                    />
+                    <View style={styles.previewCard}>
+                        <View style={styles.previewHeader}>
+                            <Text style={styles.previewTitle}>
+                                사진 {previewImage?.photoNumber}
+                            </Text>
+                            <TouchableOpacity
+                                style={styles.previewCloseButton}
+                                onPress={() => setPreviewImage(null)}
+                            >
+                                <Text style={styles.previewCloseText}>✕</Text>
+                            </TouchableOpacity>
+                        </View>
+                        {previewImage && (
+                            <Image
+                                source={{ uri: previewImage.url }}
+                                style={styles.previewImage}
+                                resizeMode="contain"
+                            />
+                        )}
+                    </View>
+                </View>
+            </Modal>
+        </>
     );
 }
 
@@ -259,12 +463,11 @@ const styles = StyleSheet.create({
     },
     container: {
         width: '100%',
-        maxWidth: 680,
-        height: '88%',
+        maxWidth: 820,
+        height: '90%',
         backgroundColor: '#FFFFFF',
-        borderRadius: 16,
+        borderRadius: 18,
         padding: 24,
-        display: 'flex',
         flexDirection: 'column',
     },
     header: {
@@ -274,11 +477,24 @@ const styles = StyleSheet.create({
         borderBottomWidth: 1,
         borderColor: '#E2E8F0',
         paddingBottom: 14,
-        marginBottom: 16,
+        marginBottom: 14,
     },
-    headerTitle: { fontSize: 18, fontWeight: '800', color: '#0F172A' },
-    headerSubtitle: { fontSize: 12, color: '#64748B', marginTop: 4 },
-    closeBtn: {
+    headerTextArea: {
+        flex: 1,
+        paddingRight: 16,
+    },
+    headerTitle: {
+        fontSize: 19,
+        fontWeight: '800',
+        color: '#0F172A',
+    },
+    headerSubtitle: {
+        fontSize: 12,
+        lineHeight: 18,
+        color: '#64748B',
+        marginTop: 4,
+    },
+    closeButton: {
         width: 32,
         height: 32,
         borderRadius: 16,
@@ -286,31 +502,147 @@ const styles = StyleSheet.create({
         justifyContent: 'center',
         alignItems: 'center',
     },
-    closeBtnText: { fontSize: 14, fontWeight: '800', color: '#64748B' },
-    body: { flex: 1, paddingRight: 4 },
-    questionBlock: {
-        marginBottom: 20,
-        backgroundColor: '#F8FAFC',
+    closeButtonText: {
+        fontSize: 14,
+        fontWeight: '800',
+        color: '#64748B',
+    },
+    body: {
+        flex: 1,
+    },
+    bodyContent: {
+        paddingRight: 4,
+        paddingBottom: 4,
+    },
+    emptyBlock: {
+        padding: 20,
         borderRadius: 12,
+        backgroundColor: '#FFF7ED',
+        borderWidth: 1,
+        borderColor: '#FED7AA',
+        marginBottom: 18,
+    },
+    emptyText: {
+        color: '#9A3412',
+        fontSize: 13,
+        fontWeight: '600',
+    },
+    questionBlock: {
+        marginBottom: 18,
+        backgroundColor: '#F8FAFC',
+        borderRadius: 14,
         padding: 16,
         borderWidth: 1,
         borderColor: '#E2E8F0',
     },
+    badgeRow: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        gap: 7,
+        marginBottom: 8,
+    },
     categoryBadge: {
         alignSelf: 'flex-start',
         backgroundColor: '#E0F2FE',
-        paddingHorizontal: 8,
-        paddingVertical: 3,
-        borderRadius: 4,
-        marginBottom: 8,
+        paddingHorizontal: 9,
+        paddingVertical: 4,
+        borderRadius: 6,
     },
-    categoryBadgeText: { fontSize: 11, fontWeight: '700', color: '#0369A1' },
-    questionText: { fontSize: 14, fontWeight: '700', color: '#0F172A', marginBottom: 12 },
-    optionsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 10 },
+    categoryBadgeText: {
+        fontSize: 11,
+        fontWeight: '700',
+        color: '#0369A1',
+    },
+    photoBadge: {
+        alignSelf: 'flex-start',
+        backgroundColor: '#EEF2FF',
+        paddingHorizontal: 9,
+        paddingVertical: 4,
+        borderRadius: 6,
+    },
+    photoBadgeText: {
+        fontSize: 11,
+        fontWeight: '700',
+        color: '#4338CA',
+    },
+    freeRecallBadge: {
+        alignSelf: 'flex-start',
+        backgroundColor: '#FEF3C7',
+        paddingHorizontal: 9,
+        paddingVertical: 4,
+        borderRadius: 6,
+        marginBottom: 9,
+    },
+    freeRecallBadgeText: {
+        fontSize: 11,
+        fontWeight: '700',
+        color: '#B45309',
+    },
+    targetClueText: {
+        color: '#64748B',
+        fontSize: 12,
+        lineHeight: 18,
+        marginBottom: 10,
+    },
+    photoSection: {
+        marginBottom: 14,
+    },
+    photoGuideText: {
+        fontSize: 11,
+        color: '#64748B',
+        marginBottom: 7,
+    },
+    photoStrip: {
+        gap: 9,
+        paddingRight: 2,
+    },
+    thumbnailButton: {
+        width: 128,
+        height: 92,
+        borderRadius: 10,
+        overflow: 'hidden',
+        backgroundColor: '#E2E8F0',
+        borderWidth: 1,
+        borderColor: '#CBD5E1',
+    },
+    thumbnail: {
+        width: '100%',
+        height: '100%',
+    },
+    thumbnailNumber: {
+        position: 'absolute',
+        top: 7,
+        left: 7,
+        minWidth: 25,
+        height: 25,
+        borderRadius: 13,
+        paddingHorizontal: 7,
+        backgroundColor: 'rgba(15, 23, 42, 0.82)',
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    thumbnailNumberText: {
+        color: '#FFFFFF',
+        fontSize: 11,
+        fontWeight: '800',
+    },
+    questionText: {
+        fontSize: 15,
+        lineHeight: 22,
+        fontWeight: '700',
+        color: '#0F172A',
+        marginBottom: 12,
+    },
+    optionsRow: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        gap: 8,
+        marginBottom: 10,
+    },
     optionChip: {
         paddingHorizontal: 12,
-        paddingVertical: 6,
-        borderRadius: 16,
+        paddingVertical: 7,
+        borderRadius: 17,
         backgroundColor: '#FFFFFF',
         borderWidth: 1,
         borderColor: '#CBD5E1',
@@ -319,19 +651,29 @@ const styles = StyleSheet.create({
         backgroundColor: '#0284C7',
         borderColor: '#0284C7',
     },
-    optionChipText: { fontSize: 12, color: '#475569', fontWeight: '600' },
-    optionChipTextActive: { color: '#FFFFFF', fontWeight: '700' },
+    optionChipText: {
+        fontSize: 12,
+        color: '#475569',
+        fontWeight: '600',
+    },
+    optionChipTextActive: {
+        color: '#FFFFFF',
+        fontWeight: '700',
+    },
     input: {
         backgroundColor: '#FFFFFF',
         borderWidth: 1,
         borderColor: '#CBD5E1',
-        borderRadius: 8,
+        borderRadius: 9,
         paddingHorizontal: 12,
-        paddingVertical: 9,
+        paddingVertical: 10,
         fontSize: 13,
         color: '#0F172A',
     },
-    multilineInput: { height: 80, textAlignVertical: 'top' },
+    multilineInput: {
+        height: 84,
+        textAlignVertical: 'top',
+    },
     footer: {
         borderTopWidth: 1,
         borderColor: '#E2E8F0',
@@ -345,39 +687,103 @@ const styles = StyleSheet.create({
         gap: 8,
         marginBottom: 10,
         backgroundColor: '#F0F9FF',
-        paddingVertical: 6,
-        borderRadius: 6,
+        paddingVertical: 7,
+        borderRadius: 7,
     },
-    statusText: { fontSize: 12, fontWeight: '700', color: '#0369A1' },
-    btnRow: {
+    statusText: {
+        fontSize: 12,
+        fontWeight: '700',
+        color: '#0369A1',
+    },
+    buttonRow: {
         flexDirection: 'row',
         justifyContent: 'flex-end',
         gap: 10,
         alignItems: 'center',
     },
-    cancelBtn: {
+    cancelButton: {
         paddingHorizontal: 16,
         paddingVertical: 10,
         borderRadius: 8,
         backgroundColor: '#F1F5F9',
     },
-    cancelBtnText: { fontSize: 13, fontWeight: '600', color: '#64748B' },
-    submitBtn: {
+    cancelButtonText: {
+        fontSize: 13,
+        fontWeight: '600',
+        color: '#64748B',
+    },
+    submitButton: {
         backgroundColor: '#0284C7',
         paddingHorizontal: 18,
         paddingVertical: 10,
         borderRadius: 8,
-        minWidth: 150,
+        minWidth: 180,
         alignItems: 'center',
         justifyContent: 'center',
     },
-    submitBtnDisabled: {
+    submitButtonDisabled: {
         backgroundColor: '#7DD3FC',
     },
-    submitBtnText: { fontSize: 13, fontWeight: '700', color: '#FFFFFF' },
+    submitButtonText: {
+        fontSize: 13,
+        fontWeight: '700',
+        color: '#FFFFFF',
+    },
     loadingInner: {
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 6,
+        gap: 7,
+    },
+    previewOverlay: {
+        flex: 1,
+        backgroundColor: 'rgba(2, 6, 23, 0.9)',
+        justifyContent: 'center',
+        alignItems: 'center',
+        padding: 24,
+    },
+    previewBackdrop: {
+        ...StyleSheet.absoluteFillObject,
+    },
+    previewCard: {
+        width: '100%',
+        maxWidth: 960,
+        height: '88%',
+        backgroundColor: '#0F172A',
+        borderRadius: 16,
+        overflow: 'hidden',
+    },
+    previewHeader: {
+        height: 52,
+        paddingHorizontal: 16,
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        borderBottomWidth: 1,
+        borderBottomColor: '#334155',
+    },
+    previewTitle: {
+        color: '#FFFFFF',
+        fontSize: 15,
+        fontWeight: '800',
+    },
+    previewCloseButton: {
+        width: 32,
+        height: 32,
+        borderRadius: 16,
+        backgroundColor: '#334155',
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+    previewCloseText: {
+        color: '#FFFFFF',
+        fontSize: 14,
+        fontWeight: '800',
+    },
+    previewImage: {
+        flex: 1,
+        width: '100%',
+        backgroundColor: '#020617',
     },
 });
+
+export default MemoryInterviewModal;

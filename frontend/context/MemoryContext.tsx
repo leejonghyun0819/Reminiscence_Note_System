@@ -34,6 +34,8 @@ export interface InterviewQAItem {
     id: string;
     category: string;
     targetClue?: string;
+    targetPhotoIndexes?: number[];
+    targetImageUrls?: string[];
     question: string;
     quickOptions?: string[];
     answer: string;

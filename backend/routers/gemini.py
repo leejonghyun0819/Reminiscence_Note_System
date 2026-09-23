@@ -66,6 +66,14 @@ class InterviewRequest(BaseModel):
         default_factory=list
     )
 
+    photoAnalyses: List[dict] = Field(
+        default_factory=list
+    )
+
+    detectedMode: Optional[str] = (
+        "childhood"
+    )
+
 
 class AlbumInterviewRequest(BaseModel):
 
@@ -84,6 +92,16 @@ class QAPairItem(BaseModel):
 
     category: Optional[str] = (
         "기억의 열쇠"
+    )
+
+    targetClue: Optional[str] = ""
+
+    targetPhotoIndexes: List[int] = Field(
+        default_factory=list
+    )
+
+    targetImageUrls: List[str] = Field(
+        default_factory=list
     )
 
     question: str
@@ -208,7 +226,8 @@ def _find_album_folder(
 
 
 def _collect_album_images(
-    album_folder: str
+    album_folder: str,
+    preferred_urls: Optional[List[str]] = None,
 ) -> list[str]:
 
     image_files = []
@@ -235,14 +254,69 @@ def _collect_album_images(
             )
         )
 
-    # 중복 제거
     image_files = list(
         dict.fromkeys(
             image_files
         )
     )
 
-    return image_files
+    # 프런트에서 보고 있는 imageUrls 순서를 우선한다.
+    # Gemini의 사진 번호와 UI의 사진 번호가 반드시 같아야 한다.
+    if preferred_urls:
+
+        by_file_name = {
+            os.path.basename(path): path
+            for path in image_files
+        }
+
+        ordered_files = []
+
+        for url in preferred_urls:
+
+            decoded_url = unquote(
+                url
+            ).split("?")[0]
+
+            file_name = os.path.basename(
+                decoded_url
+            )
+
+            matched_path = by_file_name.get(
+                file_name
+            )
+
+            if matched_path:
+                ordered_files.append(
+                    matched_path
+                )
+
+        if ordered_files:
+            ordered_files = list(
+                dict.fromkeys(
+                    ordered_files
+                )
+            )
+
+            ordered_set = set(
+                ordered_files
+            )
+
+            unmatched_files = [
+                path
+                for path in sorted(
+                    image_files
+                )
+                if path not in ordered_set
+            ]
+
+            return (
+                ordered_files
+                + unmatched_files
+            )
+
+    return sorted(
+        image_files
+    )
 
 
 # ============================================================
@@ -414,7 +488,12 @@ async def generate_interview_endpoint(
 
         result = (
             await generate_memory_interview(
-                images_payload
+                images_data=images_payload,
+                photo_analyses=req.photoAnalyses,
+                memory_mode=(
+                    req.detectedMode
+                    or "childhood"
+                ),
             )
         )
 
@@ -506,7 +585,8 @@ async def generate_interview_from_existing_album(
 
             image_files = (
                 _collect_album_images(
-                    target_album_folder
+                    target_album_folder,
+                    req.imageUrls,
                 )
             )
 
@@ -652,6 +732,9 @@ async def generate_interview_from_existing_album(
                 ),
                 photo_analyses=(
                     photo_analyses
+                ),
+                memory_mode=(
+                    detected_mode
                 ),
             )
         )
