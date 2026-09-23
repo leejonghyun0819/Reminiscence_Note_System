@@ -100,7 +100,7 @@ class InterviewQuestion(BaseModel):
     category: str
     targetClue: str = ""
     targetPhotoIndexes: List[int] = Field(
-        min_length=1
+        default_factory=list
     )
     question: str
     quickOptions: List[str] = Field(
