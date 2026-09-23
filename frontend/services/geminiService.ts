@@ -1,7 +1,19 @@
+export type MemoryMode = 'childhood' | 'travel';
+
+export interface PhotoAnalysisItem {
+    photoIndex: number;
+    globalPhotoIndex?: number;
+    detected: MemoryMode | 'unknown';
+    reason: string;
+    observedFacts?: string[];
+    memoryClues?: string[];
+}
+
 export interface InterviewQuestionItem {
     id: string;
     category: string;
     targetClue?: string;
+    targetPhotoIndexes: number[];
     question: string;
     quickOptions?: string[];
 }
@@ -11,6 +23,22 @@ export interface InterviewResponseData {
     sceneFacts: string;
     visualClues: string[];
     interviewQuestions: InterviewQuestionItem[];
+    detectedMode?: MemoryMode;
+}
+
+export interface InterviewAnswerItem {
+    id: string;
+    category: string;
+    targetClue?: string;
+    targetPhotoIndexes: number[];
+    targetImageUrls: string[];
+    question: string;
+    answer: string;
+}
+
+export interface ModeDetectionResult {
+    mode: MemoryMode;
+    photoAnalyses: PhotoAnalysisItem[];
 }
 
 export interface CuratedNoteData {
@@ -22,6 +50,11 @@ export interface CuratedNoteData {
 }
 
 const BASE_URL = 'http://localhost:8000';
+
+async function getErrorMessage(response: Response, fallback: string): Promise<string> {
+    const errorBody = await response.json().catch(() => ({}));
+    return errorBody.detail || fallback;
+}
 
 // 1. 여행 모드 멀티모달 분석
 export async function analyzeMultiImageMemoryWithGemini(
@@ -39,33 +72,37 @@ export async function analyzeMultiImageMemoryWithGemini(
     });
 
     if (!response.ok) {
-        const err = await response.json().catch(() => ({}));
-        throw new Error(err.detail || '멀티모달 분석에 실패했습니다.');
+        throw new Error(await getErrorMessage(response, '멀티모달 분석에 실패했습니다.'));
     }
 
     const data = await response.json();
     return data.analysis;
 }
 
-// 2. 신규 사진 대상 인터뷰 질문 추출
+// 2. 신규 사진 대상의 사진 연결형 인터뷰 질문 생성
 export async function generateMemoryInterview(
     images: Array<{ base64: string; mimeType: string }>,
+    photoAnalyses: PhotoAnalysisItem[] = [],
+    detectedMode: MemoryMode = 'childhood',
 ): Promise<InterviewResponseData> {
     const response = await fetch(`${BASE_URL}/api/gemini/interview`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ images }),
+        body: JSON.stringify({
+            images,
+            photoAnalyses,
+            detectedMode,
+        }),
     });
 
     if (!response.ok) {
-        const err = await response.json().catch(() => ({}));
-        throw new Error(err.detail || '인터뷰 질문을 생성하지 못했습니다.');
+        throw new Error(await getErrorMessage(response, '인터뷰 질문을 생성하지 못했습니다.'));
     }
 
     return await response.json();
 }
 
-// 3. 🌟 과거 앨범 대상 인터뷰 질문 추출 (앨범 ID 및 이미지 URL 전달)
+// 3. 과거 앨범 대상 인터뷰 질문 생성
 export async function generateInterviewFromExistingAlbum(
     memoryId: string,
     imageUrls?: string[],
@@ -80,17 +117,16 @@ export async function generateInterviewFromExistingAlbum(
     });
 
     if (!response.ok) {
-        const err = await response.json().catch(() => ({}));
-        throw new Error(err.detail || '과거 사진 분석에 실패했습니다.');
+        throw new Error(await getErrorMessage(response, '과거 사진 분석에 실패했습니다.'));
     }
 
     return await response.json();
 }
 
-// 4. 단서와 Q&A 결합 4단계 큐레이션 노트 합성
+// 4. 사진 단서와 인터뷰 답변을 큐레이션 노트로 합성
 export async function buildCuratedMemoryNote(
     factsAndClues: { estimatedEra?: string; sceneFacts?: string; visualClues?: string[] },
-    qaPairs: Array<{ id: string; category?: string; question: string; answer: string }>,
+    qaPairs: InterviewAnswerItem[],
 ): Promise<CuratedNoteData> {
     const response = await fetch(`${BASE_URL}/api/gemini/curate`, {
         method: 'POST',
@@ -102,17 +138,16 @@ export async function buildCuratedMemoryNote(
     });
 
     if (!response.ok) {
-        const err = await response.json().catch(() => ({}));
-        throw new Error(err.detail || '큐레이션 노트 합성에 실패했습니다.');
+        throw new Error(await getErrorMessage(response, '큐레이션 노트 합성에 실패했습니다.'));
     }
 
     return await response.json();
 }
 
-// frontend/services/geminiService.ts에 추가
+// 5. 사진 전체의 모드와 사진별 분석 단서를 함께 반환
 export async function detectMemoryMode(
     images: Array<{ base64: string; mimeType: string }>,
-): Promise<'childhood' | 'travel'> {
+): Promise<ModeDetectionResult> {
     const response = await fetch(`${BASE_URL}/api/gemini/detect-mode`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -120,9 +155,13 @@ export async function detectMemoryMode(
     });
 
     if (!response.ok) {
-        return 'travel';
+        throw new Error(await getErrorMessage(response, '사진 유형을 분석하지 못했습니다.'));
     }
 
     const data = await response.json();
-    return data.mode || 'travel';
+
+    return {
+        mode: data.mode || 'travel',
+        photoAnalyses: Array.isArray(data.photoAnalyses) ? data.photoAnalyses : [],
+    };
 }
