@@ -395,8 +395,11 @@ def build_photo_classification_user_prompt(photo_count: int) -> str:
 
 각 사진에 대해
 
-- childhood 또는 travel
+- photoIndex
+- childhood 또는 travel 분류
 - 판단 근거
+- 사진에서 직접 확인되는 observedFacts
+- 사진 밖 기억을 끌어낼 memoryClues
 
 를 반환하세요.
 """
