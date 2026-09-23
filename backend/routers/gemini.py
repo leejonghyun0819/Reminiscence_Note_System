@@ -291,10 +291,27 @@ def _collect_album_images(
                 )
 
         if ordered_files:
-            return list(
+            ordered_files = list(
                 dict.fromkeys(
                     ordered_files
                 )
+            )
+
+            ordered_set = set(
+                ordered_files
+            )
+
+            unmatched_files = [
+                path
+                for path in sorted(
+                    image_files
+                )
+                if path not in ordered_set
+            ]
+
+            return (
+                ordered_files
+                + unmatched_files
             )
 
     return sorted(
