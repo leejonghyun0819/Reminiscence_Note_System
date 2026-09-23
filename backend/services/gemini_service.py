@@ -1219,6 +1219,16 @@ async def generate_memory_interview_batch(
             f"{repr(e)}"
         )
 
+        first_photo = 1
+        second_photo = min(
+            2,
+            max(1, total_count),
+        )
+        last_photo = max(
+            1,
+            total_count,
+        )
+
         return {
             "estimatedEra": (
                 "정확한 시기 확인 필요"
@@ -1242,10 +1252,13 @@ async def generate_memory_interview_batch(
                         "반복되던 일상"
                     ),
                     "targetClue": (
-                        "사진에 반복되는 공간"
+                        "사진 1에 보이는 공간"
                     ),
+                    "targetPhotoIndexes": [
+                        first_photo
+                    ],
                     "question": (
-                        "사진 속 공간에서 "
+                        f"사진 {first_photo}의 공간에서 "
                         "자주 하던 일이나 "
                         "반복되던 하루의 모습이 있었나요?"
                     ),
@@ -1263,10 +1276,13 @@ async def generate_memory_interview_batch(
                         "관계"
                     ),
                     "targetClue": (
-                        "사진에 등장하는 사람들"
+                        f"사진 {second_photo}에 등장하는 사람들"
                     ),
+                    "targetPhotoIndexes": [
+                        second_photo
+                    ],
                     "question": (
-                        "사진 속 사람들과 "
+                        f"사진 {second_photo} 속 사람들과 "
                         "당시 자주 함께했던 일 중 "
                         "지금도 떠오르는 장면이 있나요?"
                     ),
@@ -1284,10 +1300,13 @@ async def generate_memory_interview_batch(
                         "사진 밖의 이야기"
                     ),
                     "targetClue": (
-                        "사진에 기록된 당시 장면"
+                        f"사진 {last_photo}에 기록된 당시 장면"
                     ),
+                    "targetPhotoIndexes": [
+                        last_photo
+                    ],
                     "question": (
-                        "이 사진을 보면 "
+                        f"사진 {last_photo}를 보면 "
                         "사진을 찍기 전이나 "
                         "찍은 뒤에 있었던 일까지 "
                         "떠오르는 것이 있나요?"
