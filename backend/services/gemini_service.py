@@ -100,7 +100,7 @@ class InterviewQuestion(BaseModel):
     category: str
     targetClue: str = ""
     targetPhotoIndexes: List[int] = Field(
-        default_factory=list
+        min_length=1
     )
     question: str
     quickOptions: List[str] = Field(
@@ -343,7 +343,13 @@ async def _generate_json(
                     dict
                 ):
 
-                    return parsed
+                    return (
+                        response_schema
+                        .model_validate(
+                            parsed
+                        )
+                        .model_dump()
+                    )
 
             if not response.text:
 
@@ -351,8 +357,16 @@ async def _generate_json(
                     "Gemini 응답의 text가 비어 있습니다."
                 )
 
-            return json.loads(
+            raw_result = json.loads(
                 response.text
+            )
+
+            return (
+                response_schema
+                .model_validate(
+                    raw_result
+                )
+                .model_dump()
             )
 
         except Exception as e:
@@ -460,6 +474,94 @@ def _append_labeled_images(
         parts.append(
             _image_part(image)
         )
+
+
+def _normalize_interview_photo_indexes(
+    result: dict,
+    total_count: int,
+    fallback_photo_indexes: list[int],
+) -> dict:
+    if total_count <= 0:
+        return result
+
+    safe_fallback_indexes = [
+        photo_index
+        for photo_index in fallback_photo_indexes
+        if 1 <= photo_index <= total_count
+    ]
+
+    if not safe_fallback_indexes:
+        safe_fallback_indexes = [1]
+
+    normalized_questions = []
+
+    for question_position, question in enumerate(
+        result.get(
+            "interviewQuestions",
+            [],
+        )
+    ):
+        normalized_question = dict(
+            question
+        )
+
+        valid_indexes = []
+
+        for raw_index in normalized_question.get(
+            "targetPhotoIndexes",
+            [],
+        ):
+            if isinstance(
+                raw_index,
+                bool,
+            ):
+                continue
+
+            try:
+                photo_index = int(
+                    raw_index
+                )
+            except (
+                TypeError,
+                ValueError,
+            ):
+                continue
+
+            if (
+                1 <= photo_index <= total_count
+                and photo_index not in valid_indexes
+            ):
+                valid_indexes.append(
+                    photo_index
+                )
+
+        if not valid_indexes:
+            valid_indexes = [
+                safe_fallback_indexes[
+                    question_position
+                    % len(
+                        safe_fallback_indexes
+                    )
+                ]
+            ]
+
+        normalized_question[
+            "targetPhotoIndexes"
+        ] = valid_indexes
+
+        normalized_questions.append(
+            normalized_question
+        )
+
+    normalized_result = dict(
+        result
+    )
+
+    normalized_result[
+        "interviewQuestions"
+    ] = normalized_questions
+
+    return normalized_result
 
 
 def _format_photo_analysis_summary(
@@ -596,7 +698,7 @@ async def generate_memory_interview(
         )
     )
 
-    return await _generate_json(
+    result = await _generate_json(
         parts=parts,
         system_instruction=(
             INTERVIEW_GENERATION_PROMPT
@@ -607,6 +709,17 @@ async def generate_memory_interview(
         operation_name=(
             "신규 기억 인터뷰 생성"
         ),
+    )
+
+    return _normalize_interview_photo_indexes(
+        result=result,
+        total_count=len(
+            images_data
+        ),
+        fallback_photo_indexes=[
+            index + 1
+            for index, _ in indexed_images
+        ],
     )
 
 
@@ -808,7 +921,34 @@ async def _classify_images_once(
             f"output={len(analyses)}"
         )
 
-    return analyses
+    expected_indexes = set(
+        range(
+            1,
+            len(images_data) + 1,
+        )
+    )
+
+    actual_indexes = {
+        item.get(
+            "photoIndex"
+        )
+        for item in analyses
+    }
+
+    if actual_indexes != expected_indexes:
+
+        raise ValueError(
+            "Gemini 사진 번호가 입력 순서와 일치하지 않습니다. "
+            f"expected={sorted(expected_indexes)}, "
+            f"actual={sorted(actual_indexes)}"
+        )
+
+    return sorted(
+        analyses,
+        key=lambda item: item[
+            "photoIndex"
+        ],
+    )
 
 
 async def _classify_chunk_adaptive(
@@ -844,9 +984,7 @@ async def _classify_chunk_adaptive(
 
         result = []
 
-        for local_idx, item in enumerate(
-            analyses
-        ):
+        for item in analyses:
 
             normalized = dict(
                 item
@@ -856,7 +994,10 @@ async def _classify_chunk_adaptive(
                 "globalPhotoIndex"
             ] = (
                 global_start_index
-                + local_idx
+                + normalized[
+                    "photoIndex"
+                ]
+                - 1
             )
 
             result.append(
@@ -1195,7 +1336,7 @@ async def generate_memory_interview_batch(
 
     try:
 
-        return await _generate_json(
+        result = await _generate_json(
             parts=parts,
             system_instruction=(
                 INTERVIEW_GENERATION_PROMPT
@@ -1206,6 +1347,15 @@ async def generate_memory_interview_batch(
             operation_name=(
                 "기존 앨범 인터뷰 재생성"
             ),
+        )
+
+        return _normalize_interview_photo_indexes(
+            result=result,
+            total_count=total_count,
+            fallback_photo_indexes=[
+                index + 1
+                for index, _ in indexed_images
+            ],
         )
 
     except Exception as e:
