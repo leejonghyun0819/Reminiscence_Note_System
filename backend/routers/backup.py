@@ -2,12 +2,12 @@
 import os
 import shutil
 import json
-from urllib.parse import unquote
+from urllib.parse import unquote, urlparse
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from config import ALBUMS_DIR
+from config import ALBUMS_DIR, ENHANCED_DIR
 from database import get_db_cursor
 from models import MoveFolderRequest, BatchMoveFoldersRequest, BatchAlbumIdsRequest
 from utils.file_utils import (
@@ -20,26 +20,342 @@ from utils.file_utils import (
 router = APIRouter(prefix="/api/backup-albums", tags=["Backup"])
 
 # ==============================================================================
-# 안전한 앨범 폴더 경로 탐색 헬퍼 (Fallback 포함)
+# 안전한 앨범 폴더 경로 탐색 및 영구 삭제 헬퍼
 # ==============================================================================
+def _is_path_inside(path: str, root: str) -> bool:
+    """실제 경로 기준으로 path가 root 내부인지 확인한다."""
+    real_path = os.path.realpath(path)
+    real_root = os.path.realpath(root)
+    try:
+        return os.path.commonpath([real_path, real_root]) == real_root
+    except ValueError:
+        return False
+
+
+def _validate_deletable_album_path(folder_path: str) -> str:
+    """
+    앨범 폴더만 삭제할 수 있도록 경로를 제한한다.
+    albums 루트와 enhanced 공용 폴더는 어떤 경우에도 삭제하지 않는다.
+    """
+    real_folder = os.path.realpath(folder_path)
+    real_albums = os.path.realpath(ALBUMS_DIR)
+    real_enhanced = os.path.realpath(ENHANCED_DIR)
+
+    if not _is_path_inside(real_folder, real_albums):
+        raise ValueError("앨범 저장소 밖의 경로는 삭제할 수 없습니다.")
+    if real_folder in {real_albums, real_enhanced}:
+        raise ValueError("앨범 저장소 루트는 삭제할 수 없습니다.")
+    if _is_path_inside(real_folder, real_enhanced):
+        raise ValueError("공용 화질 복원 폴더는 앨범으로 삭제할 수 없습니다.")
+    if not os.path.isdir(real_folder):
+        raise FileNotFoundError("Album not found")
+    if not os.path.isfile(os.path.join(real_folder, "album_meta.json")):
+        raise ValueError("album_meta.json이 없는 폴더는 삭제할 수 없습니다.")
+
+    return real_folder
+
+
 def resolve_album_path(album_id: str) -> str:
     path = find_album_folder_path(album_id)
-    if path and os.path.exists(path):
-        return path
+    if path:
+        try:
+            return _validate_deletable_album_path(path)
+        except (FileNotFoundError, ValueError):
+            pass
 
     if os.path.exists(ALBUMS_DIR):
-        for root, _, files in os.walk(ALBUMS_DIR):
-            if os.path.basename(root) == album_id:
-                return root
-            if "album_meta.json" in files:
-                try:
-                    with open(os.path.join(root, "album_meta.json"), "r", encoding="utf-8") as f:
-                        meta = json.load(f)
-                        if str(meta.get("id")) == str(album_id):
-                            return root
-                except Exception:
-                    pass
+        for root, dirs, files in os.walk(ALBUMS_DIR):
+            # 공용 AI 복원 결과 폴더는 탐색 대상에서 제외한다.
+            dirs[:] = [
+                name
+                for name in dirs
+                if os.path.realpath(os.path.join(root, name)) != os.path.realpath(ENHANCED_DIR)
+            ]
+
+            if "album_meta.json" not in files:
+                continue
+
+            try:
+                if os.path.basename(root) == str(album_id):
+                    return _validate_deletable_album_path(root)
+
+                with open(os.path.join(root, "album_meta.json"), "r", encoding="utf-8") as f:
+                    meta = json.load(f)
+                if str(meta.get("id")) == str(album_id):
+                    return _validate_deletable_album_path(root)
+            except (OSError, json.JSONDecodeError, TypeError, ValueError):
+                continue
+
     return ""
+
+
+def _normalise_url_path(value: object) -> str:
+    if not value:
+        return ""
+    try:
+        return unquote(urlparse(str(value)).path).replace("\\", "/")
+    except (TypeError, ValueError):
+        return ""
+
+
+def _json_string_list(raw_value: object) -> List[str]:
+    if isinstance(raw_value, list):
+        return [str(value) for value in raw_value if value]
+    if not raw_value:
+        return []
+    try:
+        loaded = json.loads(str(raw_value))
+        return [str(value) for value in loaded if value] if isinstance(loaded, list) else []
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+
+def _meta_media_urls(meta: dict) -> List[str]:
+    urls = _json_string_list(meta.get("imageUrls"))
+    audio_url = meta.get("audioUrl")
+    if audio_url:
+        urls.append(str(audio_url))
+    return urls
+
+
+def _row_media_urls(row: dict) -> List[str]:
+    urls = _json_string_list(row.get("image_urls_json"))
+    if row.get("audio_url"):
+        urls.append(str(row["audio_url"]))
+    return urls
+
+
+def _enhanced_filename_from_url(value: object) -> Optional[str]:
+    path = _normalise_url_path(value)
+    if not path.startswith("/enhanced/"):
+        return None
+    filename = os.path.basename(path)
+    return filename or None
+
+
+def _memory_id_matches_album(memory_id: str, identifiers: set[str]) -> bool:
+    if memory_id in identifiers:
+        return True
+    return any(memory_id.startswith(f"restored_{identifier}_") for identifier in identifiers)
+
+
+def _load_memory_rows() -> List[dict]:
+    with get_db_cursor() as cursor:
+        cursor.execute("SELECT id, image_urls_json, audio_url FROM memories")
+        return [dict(row) for row in cursor.fetchall()]
+
+
+def _find_related_memory_ids(
+    folder_path: str,
+    album_id: str,
+    meta: dict,
+    memory_rows: List[dict],
+) -> List[str]:
+    identifiers = {
+        str(value)
+        for value in (album_id, os.path.basename(folder_path), meta.get("id"))
+        if value
+    }
+    relative_folder = os.path.relpath(folder_path, ALBUMS_DIR).replace(os.sep, "/")
+    album_url_prefix = f"/albums/{relative_folder}"
+
+    related_ids = []
+    for row in memory_rows:
+        memory_id = str(row.get("id", ""))
+        row_paths = [_normalise_url_path(url) for url in _row_media_urls(row)]
+        points_to_album = any(
+            path == album_url_prefix or path.startswith(f"{album_url_prefix}/")
+            for path in row_paths
+        )
+        if _memory_id_matches_album(memory_id, identifiers) or points_to_album:
+            related_ids.append(memory_id)
+
+    return related_ids
+
+
+def _is_generated_for_album(filename: str, identifiers: set[str]) -> bool:
+    generated_markers = ("_enhanced_", "_colorized_")
+    if not any(marker in filename for marker in generated_markers):
+        return False
+
+    for identifier in identifiers:
+        if filename.startswith(f"{identifier}_"):
+            return True
+        if filename.startswith(f"restored_{identifier}_"):
+            return True
+    return False
+
+
+def _collect_enhanced_candidates(
+    folder_path: str,
+    album_id: str,
+    meta: dict,
+    related_memory_ids: List[str],
+    memory_rows: List[dict],
+) -> set[str]:
+    candidates = {
+        filename
+        for filename in (
+            _enhanced_filename_from_url(url)
+            for url in _meta_media_urls(meta)
+        )
+        if filename
+    }
+
+    related_id_set = set(related_memory_ids)
+    for row in memory_rows:
+        if str(row.get("id", "")) not in related_id_set:
+            continue
+        for url in _row_media_urls(row):
+            filename = _enhanced_filename_from_url(url)
+            if filename:
+                candidates.add(filename)
+
+    identifiers = {
+        str(value)
+        for value in (
+            album_id,
+            os.path.basename(folder_path),
+            meta.get("id"),
+            *related_memory_ids,
+        )
+        if value
+    }
+    if os.path.isdir(ENHANCED_DIR):
+        for filename in os.listdir(ENHANCED_DIR):
+            full_path = os.path.join(ENHANCED_DIR, filename)
+            if os.path.isfile(full_path) and _is_generated_for_album(filename, identifiers):
+                candidates.add(filename)
+
+    return candidates
+
+
+def _collect_shared_enhanced_references(
+    deleted_folder_path: str,
+    excluded_memory_ids: set[str],
+    memory_rows: List[dict],
+) -> set[str]:
+    """삭제 대상 외의 DB/메타가 사용 중인 공용 개선 파일명을 수집한다."""
+    shared = set()
+
+    for row in memory_rows:
+        if str(row.get("id", "")) in excluded_memory_ids:
+            continue
+        for url in _row_media_urls(row):
+            filename = _enhanced_filename_from_url(url)
+            if filename:
+                shared.add(filename)
+
+    if os.path.isdir(ALBUMS_DIR):
+        for root, dirs, files in os.walk(ALBUMS_DIR):
+            dirs[:] = [
+                name
+                for name in dirs
+                if os.path.realpath(os.path.join(root, name)) != os.path.realpath(ENHANCED_DIR)
+            ]
+            if _is_path_inside(root, deleted_folder_path):
+                continue
+            if "album_meta.json" not in files:
+                continue
+
+            other_meta = read_album_meta(root)
+            for url in _meta_media_urls(other_meta):
+                filename = _enhanced_filename_from_url(url)
+                if filename:
+                    shared.add(filename)
+
+    return shared
+
+
+def _delete_related_memory_rows(memory_ids: List[str]) -> Optional[str]:
+    if not memory_ids:
+        return None
+
+    placeholders = ", ".join("?" for _ in memory_ids)
+    try:
+        with get_db_cursor() as cursor:
+            cursor.execute(
+                f"DELETE FROM memories WHERE id IN ({placeholders})",
+                tuple(memory_ids),
+            )
+        return None
+    except Exception as exc:
+        return f"DB 레코드 정리 실패: {exc}"
+
+
+def _delete_unshared_enhanced_files(
+    candidates: set[str],
+    shared_references: set[str],
+) -> tuple[List[str], List[str]]:
+    deleted_files = []
+    cleanup_errors = []
+
+    for filename in sorted(candidates - shared_references):
+        file_path = os.path.realpath(os.path.join(ENHANCED_DIR, filename))
+        if not _is_path_inside(file_path, ENHANCED_DIR):
+            cleanup_errors.append(f"안전하지 않은 개선 파일 경로: {filename}")
+            continue
+        if not os.path.isfile(file_path):
+            continue
+
+        try:
+            os.remove(file_path)
+            deleted_files.append(filename)
+        except OSError as exc:
+            cleanup_errors.append(f"{filename} 삭제 실패: {exc}")
+
+    return deleted_files, cleanup_errors
+
+
+def _delete_album_permanently(album_id: str) -> dict:
+    folder_path = resolve_album_path(album_id)
+    if not folder_path:
+        raise FileNotFoundError("Album not found")
+
+    folder_path = _validate_deletable_album_path(folder_path)
+    meta = read_album_meta(folder_path)
+    memory_rows = _load_memory_rows()
+    related_memory_ids = _find_related_memory_ids(
+        folder_path,
+        album_id,
+        meta,
+        memory_rows,
+    )
+    enhanced_candidates = _collect_enhanced_candidates(
+        folder_path,
+        album_id,
+        meta,
+        related_memory_ids,
+        memory_rows,
+    )
+    shared_references = _collect_shared_enhanced_references(
+        folder_path,
+        set(related_memory_ids),
+        memory_rows,
+    )
+
+    # 앨범 폴더 삭제가 실패하면 DB와 공용 개선본은 건드리지 않는다.
+    shutil.rmtree(folder_path)
+
+    cleanup_errors = []
+    db_error = _delete_related_memory_rows(related_memory_ids)
+    if db_error:
+        cleanup_errors.append(db_error)
+
+    deleted_enhanced_files, enhanced_errors = _delete_unshared_enhanced_files(
+        enhanced_candidates,
+        shared_references,
+    )
+    cleanup_errors.extend(enhanced_errors)
+
+    return {
+        "albumId": album_id,
+        "deletedFolder": os.path.relpath(folder_path, ALBUMS_DIR).replace(os.sep, "/"),
+        "deletedMemoryIds": related_memory_ids,
+        "deletedEnhancedFiles": deleted_enhanced_files,
+        "cleanupErrors": cleanup_errors,
+    }
+
 
 # ==============================================================================
 # 파일명 변경 요청 스키마 및 엔드포인트
@@ -188,24 +504,46 @@ def batch_move_backup_albums(payload: BatchMoveFoldersRequest):
 
 @router.delete("/{album_id}")
 def delete_single_backup_album(album_id: str):
-    folder_path = resolve_album_path(album_id)
-    if folder_path and os.path.exists(folder_path):
-        shutil.rmtree(folder_path)
-        return {"status": "success"}
-    raise HTTPException(status_code=404, detail="Album not found")
+    try:
+        result = _delete_album_permanently(album_id)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Album not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"앨범 폴더 삭제 실패: {exc}")
+
+    return {
+        "status": "partial" if result["cleanupErrors"] else "success",
+        **result,
+    }
+
 
 @router.post("/batch-delete")
 def batch_delete_backup_albums(payload: BatchAlbumIdsRequest):
-    deleted_count = 0
-    for album_id in payload.albumIds:
-        folder_path = resolve_album_path(album_id)
-        if folder_path and os.path.exists(folder_path):
-            try:
-                shutil.rmtree(folder_path)
-                deleted_count += 1
-            except Exception as e:
-                print(f"앨범 삭제 실패: {e}")
-    return {"status": "success", "deletedCount": deleted_count}
+    results = []
+    failures = []
+
+    # 같은 ID가 여러 번 전달돼도 실제 삭제는 한 번만 수행한다.
+    for album_id in dict.fromkeys(payload.albumIds):
+        try:
+            result = _delete_album_permanently(album_id)
+            results.append(result)
+        except (FileNotFoundError, ValueError, OSError) as exc:
+            failures.append({"albumId": album_id, "detail": str(exc)})
+
+    has_cleanup_errors = any(result["cleanupErrors"] for result in results)
+    status = "success"
+    if failures or has_cleanup_errors:
+        status = "partial" if results else "failure"
+
+    return {
+        "status": status,
+        "deletedCount": len(results),
+        "failedIds": [failure["albumId"] for failure in failures],
+        "failures": failures,
+        "results": results,
+    }
 
 @router.post("/{album_id}/restore")
 def restore_backup_album(album_id: str):

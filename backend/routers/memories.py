@@ -4,7 +4,7 @@ import json
 import time
 import shutil
 from typing import Optional, List
-from urllib.parse import urlparse
+from urllib.parse import urlparse, unquote
 from fastapi import APIRouter, File, UploadFile, Form, HTTPException
 
 from config import ALBUMS_DIR, ENHANCED_DIR
@@ -59,6 +59,135 @@ def find_local_media_path(target_url: str) -> str:
         return root_direct_path
 
     raise HTTPException(status_code=404, detail="서버에 해당 원본 파일이 존재하지 않습니다.")
+
+
+def _is_path_inside(path: str, root: str) -> bool:
+    real_path = os.path.realpath(path)
+    real_root = os.path.realpath(root)
+    try:
+        return os.path.commonpath([real_path, real_root]) == real_root
+    except ValueError:
+        return False
+
+
+def _normalise_media_url_path(value: str) -> str:
+    if not value:
+        return ""
+    try:
+        return unquote(urlparse(value).path).replace("\\", "/")
+    except (TypeError, ValueError):
+        return ""
+
+
+def _parse_url_list(raw_value: object) -> List[str]:
+    if isinstance(raw_value, list):
+        return [str(value) for value in raw_value if value]
+    if not raw_value:
+        return []
+    try:
+        loaded = json.loads(str(raw_value))
+        return [str(value) for value in loaded if value] if isinstance(loaded, list) else []
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+
+def _is_media_referenced_elsewhere(
+    target_url: str,
+    memory_id: str,
+    album_folder_path: Optional[str],
+    remaining_urls: List[str],
+) -> bool:
+    """현재 앨범 외의 DB/메타가 같은 공용 미디어를 사용하는지 확인한다."""
+    target_path = _normalise_media_url_path(target_url)
+    if not target_path:
+        return True
+
+    if any(_normalise_media_url_path(url) == target_path for url in remaining_urls):
+        return True
+
+    with get_db_cursor() as cursor:
+        cursor.execute("SELECT id, image_urls_json FROM memories WHERE id != ?", (memory_id,))
+        for row in cursor.fetchall():
+            if any(
+                _normalise_media_url_path(url) == target_path
+                for url in _parse_url_list(row["image_urls_json"])
+            ):
+                return True
+
+    if os.path.isdir(ALBUMS_DIR):
+        for root, dirs, files in os.walk(ALBUMS_DIR):
+            dirs[:] = [
+                name
+                for name in dirs
+                if os.path.realpath(os.path.join(root, name)) != os.path.realpath(ENHANCED_DIR)
+            ]
+            if album_folder_path and os.path.realpath(root) == os.path.realpath(album_folder_path):
+                continue
+            if "album_meta.json" not in files:
+                continue
+
+            meta = read_album_meta(root)
+            if any(
+                _normalise_media_url_path(url) == target_path
+                for url in _parse_url_list(meta.get("imageUrls"))
+            ):
+                return True
+
+    return False
+
+
+def _delete_album_media_files(
+    memory_id: str,
+    target_url: str,
+    remaining_urls: List[str],
+    album_folder_path: Optional[str],
+    metadata_synced: bool,
+) -> tuple[List[str], List[str]]:
+    """개별 삭제된 미디어의 앨범 사본과 미사용 공용 개선본을 물리적으로 제거한다."""
+    deleted_files = []
+    cleanup_errors = []
+    target_path = _normalise_media_url_path(target_url)
+    filename = os.path.basename(target_path)
+
+    if not filename or not metadata_synced:
+        if not metadata_synced:
+            cleanup_errors.append("album_meta.json 동기화를 확인하지 못해 실제 파일 삭제를 중단했습니다.")
+        return deleted_files, cleanup_errors
+
+    candidates = []
+    remaining_names = {
+        os.path.basename(_normalise_media_url_path(url))
+        for url in remaining_urls
+        if _normalise_media_url_path(url)
+    }
+
+    # AI 개선본은 공용 enhanced 폴더와 앨범 폴더에 각각 저장된다.
+    if album_folder_path and filename not in remaining_names:
+        local_copy = os.path.realpath(os.path.join(album_folder_path, filename))
+        if _is_path_inside(local_copy, album_folder_path) and os.path.isfile(local_copy):
+            candidates.append(local_copy)
+
+    if (
+        target_path.startswith("/enhanced/")
+        and not _is_media_referenced_elsewhere(
+            target_url,
+            memory_id,
+            album_folder_path,
+            remaining_urls,
+        )
+    ):
+        shared_copy = os.path.realpath(os.path.join(ENHANCED_DIR, filename))
+        if _is_path_inside(shared_copy, ENHANCED_DIR) and os.path.isfile(shared_copy):
+            candidates.append(shared_copy)
+
+    for file_path in dict.fromkeys(candidates):
+        try:
+            os.remove(file_path)
+            deleted_files.append(os.path.relpath(file_path, ALBUMS_DIR).replace(os.sep, "/"))
+        except OSError as exc:
+            cleanup_errors.append(f"{os.path.basename(file_path)} 삭제 실패: {exc}")
+
+    return deleted_files, cleanup_errors
 
 
 @router.get("")
@@ -449,7 +578,7 @@ def append_single_image_url(memory_id: str, payload: AppendImageRequest):
 
 @router.delete("/{memory_id}/image")
 def delete_single_album_image(memory_id: str, payload: DeleteImageRequest):
-    """앨범 내 특정 사진/동영상 개별 삭제"""
+    """앨범 내 특정 사진/동영상을 DB, 메타데이터, 디스크에서 함께 삭제"""
     target_url = payload.targetImageUrl
     with get_db_cursor() as cursor:
         cursor.execute("SELECT * FROM memories WHERE id = ?", (memory_id,))
@@ -462,20 +591,21 @@ def delete_single_album_image(memory_id: str, payload: DeleteImageRequest):
 
         if len(urls) <= 1:
             raise HTTPException(status_code=400, detail="앨범에는 최소 1장 이상의 사진이 남아있어야 합니다.")
+        if target_url not in urls:
+            raise HTTPException(status_code=404, detail="삭제할 사진이 앨범에 없습니다.")
 
-        try:
-            target_idx = urls.index(target_url)
-            urls.pop(target_idx)
-            if target_idx < len(fnames):
-                fnames.pop(target_idx)
-        except ValueError:
-            pass
+        target_idx = urls.index(target_url)
+        urls.pop(target_idx)
+        if target_idx < len(fnames):
+            fnames.pop(target_idx)
 
         cursor.execute(
             "UPDATE memories SET image_urls_json = ?, file_names_json = ? WHERE id = ?",
             (json.dumps(urls, ensure_ascii=False), json.dumps(fnames, ensure_ascii=False), memory_id)
         )
 
+    cleanup_errors = []
+    metadata_synced = True
     album_folder_path = find_album_folder_path(memory_id)
     if album_folder_path:
         meta = read_album_meta(album_folder_path)
@@ -484,7 +614,31 @@ def delete_single_album_image(memory_id: str, payload: DeleteImageRequest):
             meta["fileNames"] = fnames
             write_album_meta(album_folder_path, meta)
 
-    return {"status": "success", "imageUrls": urls, "fileNames": fnames}
+            persisted_meta = read_album_meta(album_folder_path)
+            target_path = _normalise_media_url_path(target_url)
+            metadata_synced = not any(
+                _normalise_media_url_path(url) == target_path
+                for url in _parse_url_list(persisted_meta.get("imageUrls"))
+            )
+            if not metadata_synced:
+                cleanup_errors.append("album_meta.json 갱신에 실패했습니다.")
+
+    deleted_files, file_errors = _delete_album_media_files(
+        memory_id,
+        target_url,
+        urls,
+        album_folder_path,
+        metadata_synced,
+    )
+    cleanup_errors.extend(file_errors)
+
+    return {
+        "status": "partial" if cleanup_errors else "success",
+        "imageUrls": urls,
+        "fileNames": fnames,
+        "deletedFiles": deleted_files,
+        "cleanupErrors": cleanup_errors,
+    }
 
 
 @router.delete("/{memory_id}/history/{version}")

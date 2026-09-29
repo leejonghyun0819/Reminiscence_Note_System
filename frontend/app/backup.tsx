@@ -33,7 +33,7 @@ type BackupRootCategory = '유년시절' | '여행' | '미분류';
 
 export default function BackupPage({ onClose }: { onClose?: () => void }) {
     const router = useRouter();
-    const { memoryList, appendActiveMemory, appendActiveMemories } = useMemory();
+    const { memoryList, fetchMemories, appendActiveMemory, appendActiveMemories } = useMemory();
 
     // AI 분류가 없는 레거시 앨범은 별도의 미분류 보관함에서 관리한다.
     const [activeRootCategory, setActiveRootCategory] = useState<BackupRootCategory>('유년시절');
@@ -380,34 +380,87 @@ export default function BackupPage({ onClose }: { onClose?: () => void }) {
 
     const handleBatchDelete = async () => {
         if (selectedAlbumIds.size === 0) return;
+        const requestedIds = Array.from(selectedAlbumIds);
         const ok =
             Platform.OS === 'web'
-                ? window.confirm(`선택한 ${selectedAlbumIds.size}개의 앨범을 영구 삭제하시겠습니까?`)
+                ? window.confirm(`선택한 ${requestedIds.length}개의 앨범과 실제 저장 파일을 영구 삭제하시겠습니까?`)
                 : true;
         if (!ok) return;
 
         try {
             setLoading(true);
-            await fetch(`${BACKEND_URL}/api/backup-albums/batch-delete`, {
+            const res = await fetch(`${BACKEND_URL}/api/backup-albums/batch-delete`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ albumIds: Array.from(selectedAlbumIds) }),
+                body: JSON.stringify({ albumIds: requestedIds }),
             });
-            await fetchBackupData();
-            setSelectedAlbumIds(new Set());
+            const data = await res.json().catch(() => ({}));
+
+            if (!res.ok) {
+                throw new Error(data.detail || '앨범 일괄 삭제에 실패했습니다.');
+            }
+
+            await Promise.all([fetchBackupData(), fetchMemories()]);
+
+            const failedIds: string[] = Array.isArray(data.failedIds) ? data.failedIds : [];
+            setSelectedAlbumIds(new Set(failedIds));
+
+            const cleanupIssueCount = Array.isArray(data.results)
+                ? data.results.reduce(
+                      (count: number, item: any) =>
+                          count + (Array.isArray(item.cleanupErrors) ? item.cleanupErrors.length : 0),
+                      0,
+                  )
+                : 0;
+
+            if (failedIds.length > 0 || cleanupIssueCount > 0) {
+                const messages = [
+                    `${data.deletedCount || 0}개 앨범 삭제 완료`,
+                    failedIds.length > 0 ? `${failedIds.length}개 앨범 삭제 실패` : '',
+                    cleanupIssueCount > 0 ? `${cleanupIssueCount}개 보조 파일/DB 정리 항목 확인 필요` : '',
+                ].filter(Boolean);
+                alert(`일부 항목만 처리되었습니다.\n${messages.join('\n')}`);
+            } else {
+                alert(`${data.deletedCount || requestedIds.length}개 앨범과 실제 저장 파일을 삭제했습니다.`);
+            }
+        } catch (err: any) {
+            alert(err.message || '앨범 일괄 삭제 중 오류가 발생했습니다.');
         } finally {
             setLoading(false);
         }
     };
 
     const handleDeleteSingle = async (albumId: string) => {
-        const ok = Platform.OS === 'web' ? window.confirm('이 앨범을 영구 삭제하시겠습니까?') : true;
+        const ok =
+            Platform.OS === 'web'
+                ? window.confirm('이 앨범과 실제 저장 파일을 영구 삭제하시겠습니까?')
+                : true;
         if (!ok) return;
+
         try {
-            await fetch(`${BACKEND_URL}/api/backup-albums/${albumId}`, { method: 'DELETE' });
-            await fetchBackupData();
-        } catch (e) {
-            alert('삭제 실패');
+            setLoading(true);
+            const res = await fetch(
+                `${BACKEND_URL}/api/backup-albums/${encodeURIComponent(albumId)}`,
+                { method: 'DELETE' },
+            );
+            const data = await res.json().catch(() => ({}));
+
+            if (!res.ok) {
+                throw new Error(data.detail || '앨범 삭제에 실패했습니다.');
+            }
+
+            await Promise.all([fetchBackupData(), fetchMemories()]);
+
+            if (data.status === 'partial') {
+                const details = Array.isArray(data.cleanupErrors) ? data.cleanupErrors.join('\n') : '';
+                alert(`앨범 폴더는 삭제했지만 일부 정리가 필요합니다.${details ? `\n${details}` : ''}`);
+            } else {
+                alert('앨범과 실제 저장 파일을 삭제했습니다.');
+            }
+        } catch (err: any) {
+            alert(err.message || '삭제 실패');
+        } finally {
+            setLoading(false);
         }
     };
 
