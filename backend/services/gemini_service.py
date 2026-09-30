@@ -667,6 +667,7 @@ async def generate_memory_interview(
     images_data: list[dict],
     photo_analyses: Optional[list[dict]] = None,
     memory_mode: str = "childhood",
+    memory_context: Optional[dict] = None,
 ) -> dict:
 
     parts: List[types.Part] = []
@@ -694,6 +695,7 @@ async def generate_memory_interview(
                     index + 1
                     for index, _ in indexed_images
                 ],
+                memory_context=memory_context,
             )
         )
     )
@@ -711,7 +713,7 @@ async def generate_memory_interview(
         ),
     )
 
-    return _normalize_interview_photo_indexes(
+    normalized_result = _normalize_interview_photo_indexes(
         result=result,
         total_count=len(
             images_data
@@ -721,6 +723,12 @@ async def generate_memory_interview(
             for index, _ in indexed_images
         ],
     )
+
+    normalized_result[
+        "memoryContext"
+    ] = memory_context or {}
+
+    return normalized_result
 
 
 # ============================================================
@@ -1291,6 +1299,7 @@ async def generate_memory_interview_batch(
     images_data: list[dict],
     photo_analyses: list[dict],
     memory_mode: str = "childhood",
+    memory_context: Optional[dict] = None,
 ) -> dict:
 
     total_count = len(
@@ -1330,6 +1339,7 @@ async def generate_memory_interview_batch(
                     index + 1
                     for index, _ in indexed_images
                 ],
+                memory_context=memory_context,
             )
         )
     )
@@ -1349,7 +1359,7 @@ async def generate_memory_interview_batch(
             ),
         )
 
-        return _normalize_interview_photo_indexes(
+        normalized_result = _normalize_interview_photo_indexes(
             result=result,
             total_count=total_count,
             fallback_photo_indexes=[
@@ -1357,6 +1367,12 @@ async def generate_memory_interview_batch(
                 for index, _ in indexed_images
             ],
         )
+
+        normalized_result[
+            "memoryContext"
+        ] = memory_context or {}
+
+        return normalized_result
 
     except Exception as e:
 
@@ -1394,6 +1410,8 @@ async def generate_memory_interview_batch(
                 "여러 사진에 등장하는 사람",
                 "사진에 남아 있는 당시의 생활 물건",
             ],
+
+            "memoryContext": memory_context or {},
 
             "interviewQuestions": [
                 {

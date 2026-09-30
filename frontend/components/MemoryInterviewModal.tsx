@@ -18,11 +18,18 @@ import {
     InterviewAnswerItem,
     InterviewQuestionItem,
 } from '../services/geminiService';
+import {
+    hasMeaningfulMemoryContext,
+    MemoryContextData,
+    MEMORY_OWNER_LABELS,
+    MEMORY_PURPOSE_LABELS,
+} from '../types/memoryContext';
 
 interface FactsAndClues {
     estimatedEra?: string;
     sceneFacts?: string;
     visualClues?: string[];
+    memoryContext?: MemoryContextData;
 }
 
 interface PreviewImage {
@@ -143,6 +150,7 @@ export function MemoryInterviewModal({
                     estimatedEra: factsAndClues.estimatedEra || '시기 미상',
                     sceneFacts: factsAndClues.sceneFacts || '',
                     visualClues: factsAndClues.visualClues || [],
+                    memoryContext: factsAndClues.memoryContext || {},
                 },
                 qaPairs,
             );
@@ -195,6 +203,85 @@ export function MemoryInterviewModal({
                             contentContainerStyle={styles.bodyContent}
                             showsVerticalScrollIndicator={false}
                         >
+                            {hasMeaningfulMemoryContext(
+                                factsAndClues.memoryContext,
+                            ) && (
+                                <View style={styles.contextBlock}>
+                                    <Text style={styles.contextTitle}>
+                                        먼저 제공한 기억의 단서
+                                    </Text>
+                                    <Text style={styles.contextGuide}>
+                                        아래 내용은 AI가 사진을 해석하고 질문할 때 우선
+                                        참고한 정보입니다.
+                                    </Text>
+                                    <View style={styles.contextRows}>
+                                        {factsAndClues.memoryContext?.memoryOwner && (
+                                            <Text style={styles.contextRowText}>
+                                                <Text style={styles.contextRowLabel}>
+                                                    기억 주인 ·{' '}
+                                                </Text>
+                                                {
+                                                    MEMORY_OWNER_LABELS[
+                                                        factsAndClues.memoryContext
+                                                            .memoryOwner
+                                                    ]
+                                                }
+                                            </Text>
+                                        )}
+                                        {factsAndClues.memoryContext?.purpose && (
+                                            <Text style={styles.contextRowText}>
+                                                <Text style={styles.contextRowLabel}>
+                                                    기록 목적 ·{' '}
+                                                </Text>
+                                                {
+                                                    MEMORY_PURPOSE_LABELS[
+                                                        factsAndClues.memoryContext.purpose
+                                                    ]
+                                                }
+                                            </Text>
+                                        )}
+                                        {factsAndClues.memoryContext?.approximateTime ? (
+                                            <Text style={styles.contextRowText}>
+                                                <Text style={styles.contextRowLabel}>
+                                                    시기 ·{' '}
+                                                </Text>
+                                                {
+                                                    factsAndClues.memoryContext
+                                                        .approximateTime
+                                                }
+                                            </Text>
+                                        ) : null}
+                                        {factsAndClues.memoryContext?.placeHint ? (
+                                            <Text style={styles.contextRowText}>
+                                                <Text style={styles.contextRowLabel}>
+                                                    장소 ·{' '}
+                                                </Text>
+                                                {factsAndClues.memoryContext.placeHint}
+                                            </Text>
+                                        ) : null}
+                                        {factsAndClues.memoryContext?.peopleHint ? (
+                                            <Text style={styles.contextRowText}>
+                                                <Text style={styles.contextRowLabel}>
+                                                    사람 ·{' '}
+                                                </Text>
+                                                {factsAndClues.memoryContext.peopleHint}
+                                            </Text>
+                                        ) : null}
+                                        {factsAndClues.memoryContext?.additionalContext ? (
+                                            <Text style={styles.contextRowText}>
+                                                <Text style={styles.contextRowLabel}>
+                                                    추가 단서 ·{' '}
+                                                </Text>
+                                                {
+                                                    factsAndClues.memoryContext
+                                                        .additionalContext
+                                                }
+                                            </Text>
+                                        ) : null}
+                                    </View>
+                                </View>
+                            )}
+
                             {questions.length === 0 && (
                                 <View style={styles.emptyBlock}>
                                     <Text style={styles.emptyText}>
@@ -527,6 +614,38 @@ const styles = StyleSheet.create({
         fontSize: 13,
         fontWeight: '600',
     },
+    contextBlock: {
+        padding: 15,
+        borderRadius: 12,
+        backgroundColor: '#F0F9FF',
+        borderWidth: 1,
+        borderColor: '#BAE6FD',
+        marginBottom: 18,
+    },
+    contextTitle: {
+        color: '#075985',
+        fontSize: 13,
+        fontWeight: '800',
+    },
+    contextGuide: {
+        color: '#475569',
+        fontSize: 11,
+        lineHeight: 17,
+        marginTop: 3,
+        marginBottom: 9,
+    },
+    contextRows: {
+        gap: 5,
+    },
+    contextRowText: {
+        color: '#334155',
+        fontSize: 12,
+        lineHeight: 18,
+    },
+    contextRowLabel: {
+        color: '#0369A1',
+        fontWeight: '700',
+    },
     questionBlock: {
         marginBottom: 18,
         backgroundColor: '#F8FAFC',
@@ -742,7 +861,7 @@ const styles = StyleSheet.create({
         padding: 24,
     },
     previewBackdrop: {
-        ...StyleSheet.absoluteFillObject,
+        ...StyleSheet.absoluteFill,
     },
     previewCard: {
         width: '100%',

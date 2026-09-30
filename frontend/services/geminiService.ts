@@ -1,3 +1,5 @@
+import { MemoryContextData } from '../types/memoryContext';
+
 export type MemoryMode = 'childhood' | 'travel';
 
 export interface PhotoAnalysisItem {
@@ -24,6 +26,7 @@ export interface InterviewResponseData {
     visualClues: string[];
     interviewQuestions: InterviewQuestionItem[];
     detectedMode?: MemoryMode;
+    memoryContext?: MemoryContextData;
 }
 
 export interface InterviewAnswerItem {
@@ -84,6 +87,7 @@ export async function generateMemoryInterview(
     images: Array<{ base64: string; mimeType: string }>,
     photoAnalyses: PhotoAnalysisItem[] = [],
     detectedMode: MemoryMode = 'childhood',
+    memoryContext: MemoryContextData = {},
 ): Promise<InterviewResponseData> {
     const response = await fetch(`${BASE_URL}/api/gemini/interview`, {
         method: 'POST',
@@ -92,6 +96,7 @@ export async function generateMemoryInterview(
             images,
             photoAnalyses,
             detectedMode,
+            memoryContext,
         }),
     });
 
@@ -106,6 +111,7 @@ export async function generateMemoryInterview(
 export async function generateInterviewFromExistingAlbum(
     memoryId: string,
     imageUrls?: string[],
+    memoryContext?: MemoryContextData,
 ): Promise<InterviewResponseData> {
     const response = await fetch(`${BASE_URL}/api/gemini/interview-from-album`, {
         method: 'POST',
@@ -113,6 +119,7 @@ export async function generateInterviewFromExistingAlbum(
         body: JSON.stringify({
             memoryId,
             imageUrls: imageUrls || [],
+            memoryContext: memoryContext || {},
         }),
     });
 
@@ -125,7 +132,12 @@ export async function generateInterviewFromExistingAlbum(
 
 // 4. 사진 단서와 인터뷰 답변을 큐레이션 노트로 합성
 export async function buildCuratedMemoryNote(
-    factsAndClues: { estimatedEra?: string; sceneFacts?: string; visualClues?: string[] },
+    factsAndClues: {
+        estimatedEra?: string;
+        sceneFacts?: string;
+        visualClues?: string[];
+        memoryContext?: MemoryContextData;
+    },
     qaPairs: InterviewAnswerItem[],
 ): Promise<CuratedNoteData> {
     const response = await fetch(`${BASE_URL}/api/gemini/curate`, {
