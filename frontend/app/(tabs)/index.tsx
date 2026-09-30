@@ -23,6 +23,11 @@ import {
     CuratedNoteData,
 } from '../../services/geminiService';
 import { MemoryInterviewModal } from '../../components/MemoryInterviewModal';
+import { MemoryContextForm } from '../../components/MemoryContextForm';
+import {
+    DEFAULT_MEMORY_CONTEXT,
+    MemoryContextData,
+} from '../../types/memoryContext';
 import { DroppableAlbumCard } from '../../features/index/DroppableAlbumCard';
 import { GalleryViewerModal } from '../../features/index/GalleryViewerModal';
 import { EditMemoryModal } from '../../features/index/EditMemoryModal';
@@ -43,6 +48,9 @@ export default function IndexScreen() {
     const [selectedImages, setSelectedImages] = useState<any[]>([]);
     const [selectedAudio, setSelectedAudio] = useState<any | null>(null);
     const [selectedFolder, setSelectedFolder] = useState<string>('미분류');
+    const [memoryContext, setMemoryContext] = useState<MemoryContextData>({
+        ...DEFAULT_MEMORY_CONTEXT,
+    });
     const [isProcessing, setIsProcessing] = useState<boolean>(false);
     const [statusMessage, setStatusMessage] = useState<string>('');
 
@@ -186,7 +194,7 @@ export default function IndexScreen() {
                 mimeType: image.mimeType || 'image/jpeg',
             }));
 
-            setStatusMessage('사진별 장면과 기억의 단서를 분석 중입니다...');
+            setStatusMessage('사진과 입력한 기억의 단서를 함께 분석 중입니다...');
             const modeDetection = await detectMemoryMode(imagePayload);
             const detectedMode = modeDetection.mode;
 
@@ -200,6 +208,7 @@ export default function IndexScreen() {
                 imagePayload,
                 modeDetection.photoAnalyses,
                 detectedMode,
+                memoryContext,
             );
 
             setActiveEditingMemory(null);
@@ -208,6 +217,7 @@ export default function IndexScreen() {
             setInterviewData({
                 ...interviewResult,
                 detectedMode,
+                memoryContext: interviewResult.memoryContext || memoryContext,
             });
             setInterviewModalVisible(true);
         } catch (error: any) {
@@ -228,7 +238,11 @@ export default function IndexScreen() {
         setActiveEditingMemory(item);
 
         try {
-            const interviewRes = await generateInterviewFromExistingAlbum(item.id, item.imageUrls);
+            const interviewRes = await generateInterviewFromExistingAlbum(
+                item.id,
+                item.imageUrls,
+                item.interviewData?.memoryContext,
+            );
 
             const prevAnswers: Record<string, string> = {};
             let prevExtra = '';
@@ -273,6 +287,7 @@ export default function IndexScreen() {
                 sceneFacts: interviewData.sceneFacts,
                 visualClues: interviewData.visualClues,
                 questions: qaPairs,
+                memoryContext: interviewData.memoryContext || {},
             };
 
             if (activeEditingMemory) {
@@ -306,6 +321,7 @@ export default function IndexScreen() {
                 await addMultiImageMemoryToServer(selectedImages, selectedAudio, payload, selectedFolder);
                 setSelectedImages([]);
                 setSelectedAudio(null);
+                setMemoryContext({ ...DEFAULT_MEMORY_CONTEXT });
                 Alert.alert(
                     '완료',
                     `${finalMode === 'travel' ? '✈️ 여행' : '🧸 유년시절'} 추억 노트가 완성되었습니다.`,
@@ -388,7 +404,8 @@ export default function IndexScreen() {
             <View style={styles.header}>
                 <Text style={styles.headerTitle}>Reminiscence Note</Text>
                 <Text style={styles.headerSubtitle}>
-                    사진만 등록하면 AI가 유년시절과 여행을 스스로 감지하여 맞춤 기록합니다.
+                    사진과 기억의 단서를 바탕으로 AI가 질문하고, 확인된 답변으로 추억
+                    노트를 만듭니다.
                 </Text>
             </View>
 
@@ -441,6 +458,12 @@ export default function IndexScreen() {
                             </View>
                         )}
                     </View>
+
+                    <MemoryContextForm
+                        value={memoryContext}
+                        onChange={setMemoryContext}
+                        disabled={isProcessing}
+                    />
 
                     {/* 음성 첨부 */}
                     <View style={styles.optionRow}>
@@ -498,8 +521,8 @@ export default function IndexScreen() {
                         ) : (
                             <Text style={styles.actionSubmitBtnText}>
                                 {selectedImages.length > 0
-                                    ? `✨ ${selectedImages.length}장의 사진으로 추억 분석 시작`
-                                    : '✨ 추억 분석 및 복원 시작'}
+                                    ? `✨ ${selectedImages.length}장의 사진으로 맥락 인터뷰 시작`
+                                    : '✨ 사진과 단서로 인터뷰 시작'}
                             </Text>
                         )}
                     </TouchableOpacity>
@@ -688,6 +711,7 @@ export default function IndexScreen() {
                         estimatedEra: interviewData.estimatedEra,
                         sceneFacts: interviewData.sceneFacts,
                         visualClues: interviewData.visualClues,
+                        memoryContext: interviewData.memoryContext,
                     }}
                     questions={interviewData.interviewQuestions}
                     imageUrls={

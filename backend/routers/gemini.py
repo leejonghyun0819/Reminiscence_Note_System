@@ -60,6 +60,39 @@ class AnalyzeRequest(BaseModel):
     audio_mime: Optional[str] = None
 
 
+class MemoryContextPayload(BaseModel):
+
+    memoryOwner: Optional[str] = Field(
+        default=None,
+        max_length=40
+    )
+
+    purpose: Optional[str] = Field(
+        default=None,
+        max_length=40
+    )
+
+    approximateTime: Optional[str] = Field(
+        default=None,
+        max_length=120
+    )
+
+    placeHint: Optional[str] = Field(
+        default=None,
+        max_length=160
+    )
+
+    peopleHint: Optional[str] = Field(
+        default=None,
+        max_length=240
+    )
+
+    additionalContext: Optional[str] = Field(
+        default=None,
+        max_length=1200
+    )
+
+
 class InterviewRequest(BaseModel):
 
     images: List[ImageItem] = Field(
@@ -74,6 +107,10 @@ class InterviewRequest(BaseModel):
         "childhood"
     )
 
+    memoryContext: Optional[
+        MemoryContextPayload
+    ] = None
+
 
 class AlbumInterviewRequest(BaseModel):
 
@@ -83,6 +120,10 @@ class AlbumInterviewRequest(BaseModel):
 
     imageUrls: Optional[
         List[str]
+    ] = None
+
+    memoryContext: Optional[
+        MemoryContextPayload
     ] = None
 
 
@@ -120,6 +161,10 @@ class FactsAndCluesPayload(BaseModel):
     visualClues: List[str] = Field(
         default_factory=list
     )
+
+    memoryContext: Optional[
+        MemoryContextPayload
+    ] = None
 
 
 class CurateRequest(BaseModel):
@@ -319,6 +364,69 @@ def _collect_album_images(
     )
 
 
+def _read_album_memory_context(
+    album_folder: Optional[str]
+) -> dict:
+
+    if not album_folder:
+        return {}
+
+    meta_path = os.path.join(
+        album_folder,
+        "album_meta.json"
+    )
+
+    if not os.path.isfile(
+        meta_path
+    ):
+        return {}
+
+    try:
+
+        with open(
+            meta_path,
+            "r",
+            encoding="utf-8"
+        ) as file:
+            meta = json.load(
+                file
+            )
+
+        interview_data = meta.get(
+            "interviewData",
+            {}
+        )
+
+        if not isinstance(
+            interview_data,
+            dict
+        ):
+            return {}
+
+        memory_context = interview_data.get(
+            "memoryContext",
+            {}
+        )
+
+        return (
+            memory_context
+            if isinstance(
+                memory_context,
+                dict
+            )
+            else {}
+        )
+
+    except Exception as e:
+
+        print(
+            "⚠️ 저장된 기억 맥락 로딩 실패: "
+            f"{type(e).__name__}"
+        )
+
+        return {}
+
+
 # ============================================================
 # Mode Detection
 # ============================================================
@@ -494,6 +602,13 @@ async def generate_interview_endpoint(
                     req.detectedMode
                     or "childhood"
                 ),
+                memory_context=(
+                    req.memoryContext.model_dump(
+                        exclude_none=True
+                    )
+                    if req.memoryContext
+                    else {}
+                ),
             )
         )
 
@@ -573,6 +688,14 @@ async def generate_interview_from_existing_album(
 
         image_files = []
 
+        memory_context = (
+            req.memoryContext.model_dump(
+                exclude_none=True
+            )
+            if req.memoryContext
+            else {}
+        )
+
         if target_album_folder:
 
             print(
@@ -589,6 +712,13 @@ async def generate_interview_from_existing_album(
                     req.imageUrls,
                 )
             )
+
+            if not memory_context:
+                memory_context = (
+                    _read_album_memory_context(
+                        target_album_folder
+                    )
+                )
 
         # ----------------------------------------------------
         # folder를 못 찾은 경우 URL fallback
@@ -735,6 +865,9 @@ async def generate_interview_from_existing_album(
                 ),
                 memory_mode=(
                     detected_mode
+                ),
+                memory_context=(
+                    memory_context
                 ),
             )
         )

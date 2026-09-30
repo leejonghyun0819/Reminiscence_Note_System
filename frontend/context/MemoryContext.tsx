@@ -1,5 +1,6 @@
 // frontend/context/MemoryContext.tsx
 import React, { createContext, useContext, useState, useEffect } from 'react';
+import { MemoryContextData } from '../types/memoryContext';
 
 const BACKEND_URL = 'http://localhost:8000';
 
@@ -46,6 +47,7 @@ export interface InterviewData {
     sceneFacts: string;
     visualClues: string[];
     questions: InterviewQAItem[];
+    memoryContext?: MemoryContextData;
 }
 
 export type AnalysisVersion = MemoryHistoryItem;
