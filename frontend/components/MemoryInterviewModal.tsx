@@ -5,6 +5,7 @@ import {
     Alert,
     Image,
     Modal,
+    Platform,
     ScrollView,
     StyleSheet,
     Text,
@@ -13,6 +14,7 @@ import {
     useWindowDimensions,
     View,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
     buildCuratedMemoryNote,
     CuratedNoteData,
@@ -22,10 +24,9 @@ import {
 import {
     hasMeaningfulMemoryContext,
     MemoryContextData,
-    MEMORY_OWNER_LABELS,
-    MEMORY_PURPOSE_LABELS,
 } from '../types/memoryContext';
 import { memoryColors, memoryFontFamily } from '../constants/memoryTheme';
+import { WebMemoryInterviewPanel } from './web/WebMemoryInterviewPanel';
 
 interface FactsAndClues {
     estimatedEra?: string;
@@ -73,7 +74,9 @@ export function MemoryInterviewModal({
     onComplete,
 }: MemoryInterviewModalProps) {
     const { width } = useWindowDimensions();
-    const isCompact = width < 900;
+    const insets = useSafeAreaInsets();
+    const isCompact = Platform.OS !== 'web' || width < 920;
+    const modalTopPadding = Platform.OS === 'ios' ? Math.max(insets.top + 12, 56) : undefined;
     const [answers, setAnswers] = useState<Record<string, string>>({});
     const [extraStory, setExtraStory] = useState<string>('');
     const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
@@ -82,6 +85,7 @@ export function MemoryInterviewModal({
     const [draftCuratedNote, setDraftCuratedNote] = useState<CuratedNoteData | null>(null);
     const [pendingQaPairs, setPendingQaPairs] = useState<InterviewAnswerItem[]>([]);
     const [customTitle, setCustomTitle] = useState<string>('');
+    const [currentQuestionStep, setCurrentQuestionStep] = useState(0);
 
     useEffect(() => {
         if (visible) {
@@ -93,6 +97,7 @@ export function MemoryInterviewModal({
             setDraftCuratedNote(null);
             setPendingQaPairs([]);
             setCustomTitle('');
+            setCurrentQuestionStep(0);
         }
     }, [visible, initialAnswers, initialExtraStory]);
 
@@ -123,7 +128,10 @@ export function MemoryInterviewModal({
                     category: question.category,
                     targetClue: question.targetClue,
                     targetPhotoIndexes,
-                    targetImageUrls: targetPhotoIndexes.map((photoIndex) => imageUrls[photoIndex - 1]),
+                    // 사진 데이터 자체는 별도 파일로 저장됩니다. 웹의 imageUrls에는
+                    // Base64 Data URL이 들어올 수 있으므로 인터뷰 메타데이터에는
+                    // 사진 번호만 남겨 중복 전송과 Gemini 토큰 폭증을 막습니다.
+                    targetImageUrls: [],
                     question: question.question,
                     answer: answers[question.id]?.trim() || '기억 안 남',
                 };
@@ -187,21 +195,41 @@ export function MemoryInterviewModal({
         );
     };
 
+    const compactInterviewStepCount = questions.length + 1;
+    const isCompactExtraStoryStep = currentQuestionStep >= questions.length;
+    const compactQuestion = isCompactExtraStoryStep ? null : questions[currentQuestionStep];
+    const compactTargetPhotoIndexes = compactQuestion
+        ? getValidPhotoIndexes(compactQuestion, imageUrls)
+        : [];
+
+    const moveCompactInterview = (direction: -1 | 1) => {
+        setCurrentQuestionStep((previous) => {
+            const next = previous + direction;
+            return Math.max(0, Math.min(next, compactInterviewStepCount - 1));
+        });
+    };
+
     if (!visible) return null;
 
     return (
         <>
             <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-                <View style={[styles.overlay, isCompact && styles.overlayCompact]}>
+                <View
+                    style={[
+                        styles.overlay,
+                        isCompact && styles.overlayCompact,
+                        modalTopPadding !== undefined && { paddingTop: modalTopPadding },
+                    ]}
+                >
                     <View style={styles.container}>
                         <View style={styles.header}>
                             <View style={styles.headerTextArea}>
-                                <Text style={styles.headerTitle}>
+                                <Text style={[styles.headerTitle, isCompact && styles.headerTitleCompact]}>
                                     {draftCuratedNote
                                         ? '마지막으로, 이 기억의 제목을 지어주세요'
                                         : '사진을 보며, 떠오르는 기억을 들려주세요'}
                                 </Text>
-                                <Text style={styles.headerSubtitle}>
+                                <Text style={[styles.headerSubtitle, isCompact && styles.headerSubtitleCompact]}>
                                     {draftCuratedNote
                                         ? 'AI가 글을 정리하고 제목 후보를 준비했어요. 최종 제목은 직접 결정합니다.'
                                         : '입력한 단서와 사진별 질문을 함께 확인합니다. 기억나지 않는 답변은 비워도 됩니다.'}
@@ -219,41 +247,46 @@ export function MemoryInterviewModal({
                         </View>
 
                         <View style={[styles.workspace, isCompact && styles.workspaceCompact]}>
-                            <View style={[styles.photoPanel, isCompact && styles.photoPanelCompact]}>
-                                <Text style={styles.photoPanelTitle}>연결된 사진</Text>
-                                <ScrollView
-                                    style={styles.photoPanelScroll}
-                                    contentContainerStyle={styles.photoPanelGrid}
-                                    showsVerticalScrollIndicator={false}
-                                >
-                                    {imageUrls.map((imageUrl, index) => (
-                                        <TouchableOpacity
-                                            key={`${imageUrl}-${index}`}
-                                            style={[styles.photoPanelItem, index === 0 && styles.photoPanelItemPrimary]}
-                                            onPress={() =>
-                                                setPreviewImage({
-                                                    url: imageUrl,
-                                                    photoNumber: index + 1,
-                                                })
-                                            }
-                                            activeOpacity={0.82}
-                                        >
-                                            <Image source={{ uri: imageUrl }} style={styles.photoPanelImage} />
-                                            <View style={styles.photoPanelNumberBadge}>
-                                                <Text style={styles.photoPanelNumberText}>사진 {index + 1}</Text>
-                                            </View>
-                                        </TouchableOpacity>
-                                    ))}
-                                </ScrollView>
-                                <View style={styles.clueSummary}>
-                                    <Text style={styles.clueSummaryTitle}>사진 속 단서</Text>
-                                    <Text style={styles.clueSummaryText} numberOfLines={3}>
-                                        {(factsAndClues.visualClues || []).join(' · ') ||
-                                            factsAndClues.sceneFacts ||
-                                            '사진별 단서를 질문에서 확인할 수 있어요.'}
-                                    </Text>
+                            {!isCompact && draftCuratedNote ? (
+                                <View style={styles.photoPanel}>
+                                    <Text style={styles.photoPanelTitle}>연결된 사진</Text>
+                                    <ScrollView
+                                        style={styles.photoPanelScroll}
+                                        contentContainerStyle={styles.photoPanelGrid}
+                                        showsVerticalScrollIndicator={false}
+                                    >
+                                        {imageUrls.map((imageUrl, index) => (
+                                            <TouchableOpacity
+                                                key={`${imageUrl}-${index}`}
+                                                style={[
+                                                    styles.photoPanelItem,
+                                                    index === 0 && styles.photoPanelItemPrimary,
+                                                ]}
+                                                onPress={() =>
+                                                    setPreviewImage({
+                                                        url: imageUrl,
+                                                        photoNumber: index + 1,
+                                                    })
+                                                }
+                                                activeOpacity={0.82}
+                                            >
+                                                <Image source={{ uri: imageUrl }} style={styles.photoPanelImage} />
+                                                <View style={styles.photoPanelNumberBadge}>
+                                                    <Text style={styles.photoPanelNumberText}>사진 {index + 1}</Text>
+                                                </View>
+                                            </TouchableOpacity>
+                                        ))}
+                                    </ScrollView>
+                                    <View style={styles.clueSummary}>
+                                        <Text style={styles.clueSummaryTitle}>사진 속 단서</Text>
+                                        <Text style={styles.clueSummaryText} numberOfLines={3}>
+                                            {(factsAndClues.visualClues || []).join(' · ') ||
+                                                factsAndClues.sceneFacts ||
+                                                '사진별 단서를 질문에서 확인할 수 있어요.'}
+                                        </Text>
+                                    </View>
                                 </View>
-                            </View>
+                            ) : null}
 
                             <View style={styles.questionPane}>
                                 {draftCuratedNote ? (
@@ -332,246 +365,252 @@ export function MemoryInterviewModal({
                                             </TouchableOpacity>
                                         </View>
                                     </View>
-                                ) : (
-                                    <>
-                                <ScrollView
-                                    style={styles.body}
-                                    contentContainerStyle={styles.bodyContent}
-                                    showsVerticalScrollIndicator={false}
-                                >
-                                    {hasMeaningfulMemoryContext(factsAndClues.memoryContext) && (
-                                        <View style={styles.contextBlock}>
-                                            <Text style={styles.contextTitle}>먼저 제공한 기억의 단서</Text>
-                                            <Text style={styles.contextGuide}>
-                                                아래 내용은 AI가 사진을 해석하고 질문할 때 우선 참고한 정보입니다.
-                                            </Text>
-                                            <View style={styles.contextRows}>
-                                                {factsAndClues.memoryContext?.memoryOwner && (
-                                                    <Text style={styles.contextRowText}>
-                                                        <Text style={styles.contextRowLabel}>기억 주인 · </Text>
-                                                        {MEMORY_OWNER_LABELS[factsAndClues.memoryContext.memoryOwner]}
-                                                    </Text>
-                                                )}
-                                                {factsAndClues.memoryContext?.purpose && (
-                                                    <Text style={styles.contextRowText}>
-                                                        <Text style={styles.contextRowLabel}>기록 목적 · </Text>
-                                                        {MEMORY_PURPOSE_LABELS[factsAndClues.memoryContext.purpose]}
-                                                    </Text>
-                                                )}
-                                                {factsAndClues.memoryContext?.approximateTime ? (
-                                                    <Text style={styles.contextRowText}>
-                                                        <Text style={styles.contextRowLabel}>시기 · </Text>
-                                                        {factsAndClues.memoryContext.approximateTime}
-                                                    </Text>
-                                                ) : null}
-                                                {factsAndClues.memoryContext?.placeHint ? (
-                                                    <Text style={styles.contextRowText}>
-                                                        <Text style={styles.contextRowLabel}>장소 · </Text>
-                                                        {factsAndClues.memoryContext.placeHint}
-                                                    </Text>
-                                                ) : null}
-                                                {factsAndClues.memoryContext?.peopleHint ? (
-                                                    <Text style={styles.contextRowText}>
-                                                        <Text style={styles.contextRowLabel}>사람 · </Text>
-                                                        {factsAndClues.memoryContext.peopleHint}
-                                                    </Text>
-                                                ) : null}
-                                                {factsAndClues.memoryContext?.additionalContext ? (
-                                                    <Text style={styles.contextRowText}>
-                                                        <Text style={styles.contextRowLabel}>추가 단서 · </Text>
-                                                        {factsAndClues.memoryContext.additionalContext}
-                                                    </Text>
-                                                ) : null}
+                                ) : isCompact ? (
+                                    <View style={styles.compactInterview}>
+                                        <View style={styles.compactProgressHeader}>
+                                            <View>
+                                                <Text style={styles.compactProgressLabel}>
+                                                    {isCompactExtraStoryStep
+                                                        ? '마지막 · 추가 사연'
+                                                        : `질문 ${currentQuestionStep + 1}`}
+                                                </Text>
+                                                <Text style={styles.compactProgressCount}>
+                                                    {currentQuestionStep + 1} / {compactInterviewStepCount}
+                                                </Text>
                                             </View>
-                                        </View>
-                                    )}
-
-                                    {questions.length === 0 && (
-                                        <View style={styles.emptyBlock}>
-                                            <Text style={styles.emptyText}>
-                                                생성된 질문이 없습니다. 잠시 후 다시 시도해주세요.
-                                            </Text>
-                                        </View>
-                                    )}
-
-                                    {questions.map((question, questionIndex) => {
-                                        const currentAnswer = answers[question.id] || '';
-                                        const targetPhotoIndexes = getValidPhotoIndexes(question, imageUrls);
-                                        const photoLabel = targetPhotoIndexes
-                                            .map((photoIndex) => '사진 ' + photoIndex)
-                                            .join(', ');
-
-                                        return (
-                                            <View
-                                                key={question.id || String(questionIndex)}
-                                                style={styles.questionBlock}
-                                            >
-                                                <View style={styles.badgeRow}>
-                                                    <View style={styles.categoryBadge}>
-                                                        <Text style={styles.categoryBadgeText}>
-                                                            {question.category || '기억의 단서'}
-                                                        </Text>
-                                                    </View>
-                                                    {targetPhotoIndexes.length > 0 && (
-                                                        <View style={styles.photoBadge}>
-                                                            <Text style={styles.photoBadgeText}>📷 {photoLabel}</Text>
-                                                        </View>
-                                                    )}
+                                            {hasMeaningfulMemoryContext(factsAndClues.memoryContext) ? (
+                                                <View style={styles.contextAppliedBadge}>
+                                                    <Text style={styles.contextAppliedBadgeText}>기억 단서 반영됨</Text>
                                                 </View>
+                                            ) : null}
+                                        </View>
 
-                                                {question.targetClue ? (
-                                                    <Text style={styles.targetClueText}>
-                                                        살펴볼 단서 · {question.targetClue}
+                                        <View style={styles.compactProgressTrack}>
+                                            <View
+                                                style={[
+                                                    styles.compactProgressFill,
+                                                    {
+                                                        width: `${
+                                                            ((currentQuestionStep + 1) / compactInterviewStepCount) * 100
+                                                        }%`,
+                                                    },
+                                                ]}
+                                            />
+                                        </View>
+
+                                        <View style={styles.compactQuestionCard}>
+                                            {questions.length === 0 ? (
+                                                <View style={styles.emptyBlock}>
+                                                    <Text style={styles.emptyText}>
+                                                        생성된 질문이 없습니다. 잠시 후 다시 시도해주세요.
                                                     </Text>
-                                                ) : null}
+                                                </View>
+                                            ) : isCompactExtraStoryStep ? (
+                                                <>
+                                                    <View style={styles.freeRecallBadge}>
+                                                        <Text style={styles.freeRecallBadgeText}>자유 회상</Text>
+                                                    </View>
+                                                    <Text style={styles.compactQuestionText}>
+                                                        그 외에 떠오르는 사연이나 꼭 남기고 싶은 이야기가 있나요?
+                                                    </Text>
+                                                    <Text style={styles.compactQuestionGuide}>
+                                                        없다면 비워둔 채 추억 완성을 눌러도 괜찮아요.
+                                                    </Text>
+                                                    <TextInput
+                                                        style={[styles.input, styles.compactAnswerInput]}
+                                                        placeholder="예: 사진을 찍고 가족과 함께 식사했던 기억"
+                                                        placeholderTextColor={memoryColors.textFaint}
+                                                        value={extraStory}
+                                                        onChangeText={setExtraStory}
+                                                        multiline
+                                                        textAlignVertical="top"
+                                                        editable={!isSubmitting}
+                                                    />
+                                                </>
+                                            ) : compactQuestion ? (
+                                                <>
+                                                    <View style={styles.badgeRow}>
+                                                        <View style={styles.categoryBadge}>
+                                                            <Text style={styles.categoryBadgeText}>
+                                                                {compactQuestion.category || '기억의 단서'}
+                                                            </Text>
+                                                        </View>
+                                                        {compactTargetPhotoIndexes.length > 0 ? (
+                                                            <View style={styles.photoBadge}>
+                                                                <Text style={styles.photoBadgeText}>
+                                                                    📷{' '}
+                                                                    {compactTargetPhotoIndexes
+                                                                        .map((photoIndex) => `사진 ${photoIndex}`)
+                                                                        .join(', ')}
+                                                                </Text>
+                                                            </View>
+                                                        ) : null}
+                                                    </View>
 
-                                                {targetPhotoIndexes.length > 0 && (
-                                                    <View style={styles.photoSection}>
-                                                        <Text style={styles.photoGuideText}>
-                                                            사진을 누르면 크게 볼 수 있어요
+                                                    {compactQuestion.targetClue ? (
+                                                        <Text style={styles.targetClueText} numberOfLines={2}>
+                                                            살펴볼 단서 · {compactQuestion.targetClue}
                                                         </Text>
+                                                    ) : null}
+
+                                                    {compactTargetPhotoIndexes.length > 0 ? (
                                                         <ScrollView
                                                             horizontal
                                                             showsHorizontalScrollIndicator={false}
-                                                            contentContainerStyle={styles.photoStrip}
+                                                            contentContainerStyle={styles.compactPhotoStrip}
+                                                            style={styles.compactPhotoScroll}
                                                         >
-                                                            {targetPhotoIndexes.map((photoIndex) => {
-                                                                const imageUrl = imageUrls[photoIndex - 1];
-
-                                                                return (
-                                                                    <TouchableOpacity
-                                                                        key={photoIndex}
-                                                                        style={styles.thumbnailButton}
-                                                                        activeOpacity={0.82}
-                                                                        onPress={() =>
-                                                                            setPreviewImage({
-                                                                                url: imageUrl,
-                                                                                photoNumber: photoIndex,
-                                                                            })
-                                                                        }
-                                                                        disabled={isSubmitting}
-                                                                        accessibilityRole="button"
-                                                                        accessibilityLabel={
-                                                                            '사진 ' + photoIndex + ' 크게 보기'
-                                                                        }
-                                                                    >
-                                                                        <Image
-                                                                            source={{ uri: imageUrl }}
-                                                                            style={styles.thumbnail}
-                                                                            resizeMode="cover"
-                                                                        />
-                                                                        <View style={styles.thumbnailNumber}>
-                                                                            <Text style={styles.thumbnailNumberText}>
-                                                                                {photoIndex}
-                                                                            </Text>
-                                                                        </View>
-                                                                    </TouchableOpacity>
-                                                                );
-                                                            })}
-                                                        </ScrollView>
-                                                    </View>
-                                                )}
-
-                                                <Text style={styles.questionText}>
-                                                    {questionIndex + 1}. {question.question}
-                                                </Text>
-
-                                                {question.quickOptions && question.quickOptions.length > 0 && (
-                                                    <View style={styles.optionsRow}>
-                                                        {question.quickOptions.map((option, optionIndex) => {
-                                                            const isSelected = currentAnswer === option;
-
-                                                            return (
+                                                            {compactTargetPhotoIndexes.map((photoIndex) => (
                                                                 <TouchableOpacity
-                                                                    key={option + String(optionIndex)}
-                                                                    style={[
-                                                                        styles.optionChip,
-                                                                        isSelected && styles.optionChipActive,
-                                                                    ]}
+                                                                    key={photoIndex}
+                                                                    style={styles.compactThumbnailButton}
                                                                     onPress={() =>
-                                                                        handleOptionSelect(question.id, option)
+                                                                        setPreviewImage({
+                                                                            url: imageUrls[photoIndex - 1],
+                                                                            photoNumber: photoIndex,
+                                                                        })
                                                                     }
                                                                     disabled={isSubmitting}
                                                                 >
-                                                                    <Text
-                                                                        style={[
-                                                                            styles.optionChipText,
-                                                                            isSelected && styles.optionChipTextActive,
-                                                                        ]}
-                                                                    >
-                                                                        {option}
-                                                                    </Text>
+                                                                    <Image
+                                                                        source={{ uri: imageUrls[photoIndex - 1] }}
+                                                                        style={styles.thumbnail}
+                                                                        resizeMode="cover"
+                                                                    />
+                                                                    <View style={styles.thumbnailNumber}>
+                                                                        <Text style={styles.thumbnailNumberText}>
+                                                                            {photoIndex}
+                                                                        </Text>
+                                                                    </View>
                                                                 </TouchableOpacity>
-                                                            );
-                                                        })}
-                                                    </View>
-                                                )}
+                                                            ))}
+                                                        </ScrollView>
+                                                    ) : null}
 
-                                                <TextInput
-                                                    style={styles.input}
-                                                    placeholder="사진을 보며 떠오른 기억을 직접 적어주세요."
-                                                    placeholderTextColor="#94A3B8"
-                                                    value={currentAnswer}
-                                                    onChangeText={(text) => handleTextChange(question.id, text)}
-                                                    editable={!isSubmitting}
-                                                />
+                                                    <Text style={styles.compactQuestionText} numberOfLines={4}>
+                                                        {compactQuestion.question}
+                                                    </Text>
+
+                                                    {compactQuestion.quickOptions &&
+                                                    compactQuestion.quickOptions.length > 0 ? (
+                                                        <View style={styles.optionsRow}>
+                                                            {compactQuestion.quickOptions.map((option, optionIndex) => {
+                                                                const selected = answers[compactQuestion.id] === option;
+                                                                return (
+                                                                    <TouchableOpacity
+                                                                        key={option + String(optionIndex)}
+                                                                        style={[
+                                                                            styles.optionChip,
+                                                                            selected && styles.optionChipActive,
+                                                                        ]}
+                                                                        onPress={() =>
+                                                                            handleOptionSelect(compactQuestion.id, option)
+                                                                        }
+                                                                        disabled={isSubmitting}
+                                                                    >
+                                                                        <Text
+                                                                            style={[
+                                                                                styles.optionChipText,
+                                                                                selected && styles.optionChipTextActive,
+                                                                            ]}
+                                                                        >
+                                                                            {option}
+                                                                        </Text>
+                                                                    </TouchableOpacity>
+                                                                );
+                                                            })}
+                                                        </View>
+                                                    ) : null}
+
+                                                    <TextInput
+                                                        style={[styles.input, styles.compactAnswerInput]}
+                                                        placeholder="사진을 보며 떠오른 기억을 적어주세요."
+                                                        placeholderTextColor={memoryColors.textFaint}
+                                                        value={answers[compactQuestion.id] || ''}
+                                                        onChangeText={(text) =>
+                                                            handleTextChange(compactQuestion.id, text)
+                                                        }
+                                                        multiline
+                                                        textAlignVertical="top"
+                                                        editable={!isSubmitting}
+                                                    />
+                                                </>
+                                            ) : null}
+                                        </View>
+
+                                        {isSubmitting ? (
+                                            <View style={styles.statusRow}>
+                                                <ActivityIndicator size="small" color={memoryColors.brand} />
+                                                <Text style={styles.statusText}>{statusText}</Text>
                                             </View>
-                                        );
-                                    })}
+                                        ) : null}
 
-                                    <View style={styles.questionBlock}>
-                                        <View style={styles.freeRecallBadge}>
-                                            <Text style={styles.freeRecallBadgeText}>자유 회상</Text>
+                                        <View style={styles.compactNavigation}>
+                                            <TouchableOpacity
+                                                style={styles.compactPreviousButton}
+                                                onPress={() => {
+                                                    if (currentQuestionStep === 0) onClose();
+                                                    else moveCompactInterview(-1);
+                                                }}
+                                                disabled={isSubmitting}
+                                            >
+                                                <Text style={styles.cancelButtonText}>
+                                                    {currentQuestionStep === 0 ? '취소' : '이전'}
+                                                </Text>
+                                            </TouchableOpacity>
+                                            <TouchableOpacity
+                                                style={[
+                                                    styles.compactNextButton,
+                                                    (isSubmitting || questions.length === 0) &&
+                                                        styles.submitButtonDisabled,
+                                                ]}
+                                                onPress={() => {
+                                                    if (isCompactExtraStoryStep) handleSubmit();
+                                                    else moveCompactInterview(1);
+                                                }}
+                                                disabled={isSubmitting || questions.length === 0}
+                                            >
+                                                {isSubmitting ? (
+                                                    <View style={styles.loadingInner}>
+                                                        <ActivityIndicator size="small" color="#FFFFFF" />
+                                                        <Text style={styles.submitButtonText}>노트 작성 중...</Text>
+                                                    </View>
+                                                ) : (
+                                                    <Text style={styles.submitButtonText}>
+                                                        {isCompactExtraStoryStep ? '답변으로 추억 완성하기' : '다음 질문'}
+                                                    </Text>
+                                                )}
+                                            </TouchableOpacity>
                                         </View>
-                                        <Text style={styles.questionText}>
-                                            {questions.length + 1}. 그 외에 떠오르는 사연이나 꼭 남기고 싶은 이야기가
-                                            있다면 자유롭게 적어주세요.
-                                        </Text>
-                                        <TextInput
-                                            style={[styles.input, styles.multilineInput]}
-                                            placeholder="예: 이 사진을 찍고 나서 가족과 함께 식사했던 기억이 나요."
-                                            placeholderTextColor="#94A3B8"
-                                            value={extraStory}
-                                            onChangeText={setExtraStory}
-                                            multiline
-                                            editable={!isSubmitting}
-                                        />
                                     </View>
-                                </ScrollView>
-
-                                <View style={styles.footer}>
-                                    {isSubmitting && (
-                                        <View style={styles.statusRow}>
-                                            <ActivityIndicator size="small" color="#0284C7" />
-                                            <Text style={styles.statusText}>{statusText}</Text>
-                                        </View>
-                                    )}
-
-                                    <View style={styles.buttonRow}>
-                                        <TouchableOpacity
-                                            style={styles.cancelButton}
-                                            onPress={onClose}
-                                            disabled={isSubmitting}
-                                        >
-                                            <Text style={styles.cancelButtonText}>취소</Text>
-                                        </TouchableOpacity>
-                                        <TouchableOpacity
-                                            style={[styles.submitButton, isSubmitting && styles.submitButtonDisabled]}
-                                            onPress={handleSubmit}
-                                            disabled={isSubmitting || questions.length === 0}
-                                        >
-                                            {isSubmitting ? (
-                                                <View style={styles.loadingInner}>
-                                                    <ActivityIndicator size="small" color="#FFFFFF" />
-                                                    <Text style={styles.submitButtonText}>노트 작성 중...</Text>
-                                                </View>
-                                            ) : (
-                                                <Text style={styles.submitButtonText}>답변으로 추억 완성하기</Text>
-                                            )}
-                                        </TouchableOpacity>
-                                    </View>
-                                </View>
-                                    </>
+                                ) : (
+                                    <WebMemoryInterviewPanel
+                                        questions={questions}
+                                        imageUrls={imageUrls}
+                                        answers={answers}
+                                        extraStory={extraStory}
+                                        currentStep={currentQuestionStep}
+                                        isSubmitting={isSubmitting}
+                                        statusText={statusText}
+                                        memoryContext={factsAndClues.memoryContext}
+                                        onAnswerChange={handleTextChange}
+                                        onOptionSelect={handleOptionSelect}
+                                        onExtraStoryChange={setExtraStory}
+                                        onPreviewPhoto={(photoIndex) =>
+                                            setPreviewImage({
+                                                url: imageUrls[photoIndex - 1],
+                                                photoNumber: photoIndex,
+                                            })
+                                        }
+                                        onPrevious={() => {
+                                            if (currentQuestionStep === 0) onClose();
+                                            else moveCompactInterview(-1);
+                                        }}
+                                        onNext={() => {
+                                            if (isCompactExtraStoryStep) handleSubmit();
+                                            else moveCompactInterview(1);
+                                        }}
+                                    />
                                 )}
                             </View>
                         </View>
@@ -649,6 +688,7 @@ const styles = StyleSheet.create({
         color: memoryColors.text,
         fontFamily: memoryFontFamily,
     },
+    headerTitleCompact: { fontSize: 22, lineHeight: 31 },
     headerSubtitle: {
         fontSize: 14,
         lineHeight: 24,
@@ -656,6 +696,7 @@ const styles = StyleSheet.create({
         marginTop: 2,
         fontFamily: memoryFontFamily,
     },
+    headerSubtitleCompact: { fontSize: 12, lineHeight: 18, marginTop: 4 },
     closeButton: {
         width: 32,
         height: 32,
@@ -909,6 +950,121 @@ const styles = StyleSheet.create({
         padding: 24,
         borderWidth: 1,
         borderColor: memoryColors.border,
+    },
+    compactInterview: {
+        flex: 1,
+        minHeight: 0,
+    },
+    compactProgressHeader: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: 12,
+        marginBottom: 8,
+    },
+    compactProgressLabel: {
+        color: memoryColors.text,
+        fontSize: 14,
+        fontWeight: '700',
+        fontFamily: memoryFontFamily,
+    },
+    compactProgressCount: {
+        color: memoryColors.textMuted,
+        fontSize: 11,
+        marginTop: 2,
+        fontFamily: memoryFontFamily,
+    },
+    contextAppliedBadge: {
+        paddingHorizontal: 10,
+        paddingVertical: 5,
+        borderRadius: 999,
+        backgroundColor: memoryColors.brandLight,
+    },
+    contextAppliedBadgeText: {
+        color: memoryColors.brand,
+        fontSize: 10,
+        fontWeight: '700',
+        fontFamily: memoryFontFamily,
+    },
+    compactProgressTrack: {
+        width: '100%',
+        height: 5,
+        borderRadius: 999,
+        overflow: 'hidden',
+        backgroundColor: memoryColors.border,
+        marginBottom: 12,
+    },
+    compactProgressFill: {
+        height: '100%',
+        borderRadius: 999,
+        backgroundColor: memoryColors.brand,
+    },
+    compactQuestionCard: {
+        flex: 1,
+        minHeight: 0,
+        padding: 16,
+        borderRadius: 16,
+        borderWidth: 1,
+        borderColor: memoryColors.border,
+        backgroundColor: memoryColors.surface,
+        justifyContent: 'center',
+    },
+    compactQuestionText: {
+        color: memoryColors.text,
+        fontSize: 17,
+        lineHeight: 25,
+        fontWeight: '700',
+        marginBottom: 10,
+        fontFamily: memoryFontFamily,
+    },
+    compactQuestionGuide: {
+        color: memoryColors.textMuted,
+        fontSize: 12,
+        lineHeight: 18,
+        marginBottom: 14,
+        fontFamily: memoryFontFamily,
+    },
+    compactPhotoScroll: { flexGrow: 0, marginBottom: 12 },
+    compactPhotoStrip: { gap: 8, paddingRight: 2 },
+    compactThumbnailButton: {
+        width: 104,
+        height: 72,
+        borderRadius: 10,
+        overflow: 'hidden',
+        backgroundColor: memoryColors.subtle,
+        borderWidth: 1,
+        borderColor: memoryColors.border,
+    },
+    compactAnswerInput: {
+        minHeight: 72,
+        maxHeight: 100,
+        paddingTop: 11,
+    },
+    compactNavigation: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 10,
+        paddingTop: 12,
+    },
+    compactPreviousButton: {
+        minHeight: 48,
+        minWidth: 84,
+        paddingHorizontal: 14,
+        borderRadius: 10,
+        borderWidth: 1,
+        borderColor: memoryColors.border,
+        backgroundColor: memoryColors.surface,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    compactNextButton: {
+        minHeight: 48,
+        flex: 1,
+        paddingHorizontal: 14,
+        borderRadius: 10,
+        backgroundColor: memoryColors.brand,
+        alignItems: 'center',
+        justifyContent: 'center',
     },
     badgeRow: {
         flexDirection: 'row',

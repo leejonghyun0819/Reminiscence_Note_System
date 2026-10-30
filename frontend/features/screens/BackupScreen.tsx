@@ -1,4 +1,4 @@
-// frontend/app/(tabs)/backup.tsx
+// Shared archive screen used by web and native route entries.
 import React, { useState, useEffect } from 'react';
 import {
     StyleSheet,
@@ -14,17 +14,16 @@ import {
     useWindowDimensions,
 } from 'react-native';
 import { useRouter } from 'expo-router';
-import { useMemory, AnalysisVersion } from '../context/MemoryContext';
-import { MouseDragHorizontalScroll } from '../features/backup/MouseDragHorizontalScroll';
-import { CreateFolderModal } from '../features/backup/CreateFolderModal';
-import { MoveFolderModal } from '../features/MoveFolderModal';
-import { BackupDetailViewerModal, BackupAlbumMeta } from '../features/backup/BackupDetailViewerModal';
-import { isVideoUrl } from '../utils/mediaProcessUtils';
-import { MemoryAppHeader } from '../components/MemoryAppHeader';
-import { MemoryPageHeader } from '../components/MemoryPageHeader';
-import { memoryColors, memoryLayout } from '../constants/memoryTheme';
-
-const BACKEND_URL = 'http://localhost:8000';
+import { useMemory, AnalysisVersion } from '../../context/MemoryContext';
+import { MouseDragHorizontalScroll } from '../backup/MouseDragHorizontalScroll';
+import { CreateFolderModal } from '../backup/CreateFolderModal';
+import { MoveFolderModal } from '../MoveFolderModal';
+import { BackupDetailViewerModal, BackupAlbumMeta } from '../backup/BackupDetailViewerModal';
+import { isVideoUrl } from '../../utils/mediaProcessUtils';
+import { MemoryAppHeader } from '../../components/MemoryAppHeader';
+import { MemoryPageHeader } from '../../components/MemoryPageHeader';
+import { memoryColors, memoryLayout } from '../../constants/memoryTheme';
+import { API_BASE_URL as BACKEND_URL, resolveBackendMediaUrls } from '../../config/api';
 
 export interface ExtendedBackupAlbumMeta extends BackupAlbumMeta {
     mode?: 'travel' | 'childhood';
@@ -36,10 +35,10 @@ export interface ExtendedBackupAlbumMeta extends BackupAlbumMeta {
 type BackupRootCategory = '유년시절' | '여행' | '미분류';
 type StorageType = 'memory' | 'note';
 
-export default function BackupPage({ onClose }: { onClose?: () => void }) {
+export default function BackupPage({ onClose, mobile = false }: { onClose?: () => void; mobile?: boolean }) {
     const router = useRouter();
     const { width } = useWindowDimensions();
-    const isNarrow = width < 900;
+    const isNarrow = mobile || width < 900;
     const {
         memoryList,
         generatedNotes,
@@ -120,7 +119,7 @@ export default function BackupPage({ onClose }: { onClose?: () => void }) {
             ]);
 
             if (albumsRes.ok) {
-                const loadedAlbums: ExtendedBackupAlbumMeta[] = await albumsRes.json();
+                const loadedAlbums = resolveBackendMediaUrls<ExtendedBackupAlbumMeta[]>(await albumsRes.json());
                 setBackupAlbums(loadedAlbums);
             } else {
                 setFetchError(true);
@@ -301,7 +300,7 @@ export default function BackupPage({ onClose }: { onClose?: () => void }) {
             });
             if (res.ok) {
                 const data = await res.json();
-                appendActiveMemory(data.restoredItem);
+                appendActiveMemory(resolveBackendMediaUrls(data.restoredItem));
                 alert('✨ 현재 작업 화면(홈)으로 추억 앨범이 성공적으로 복원되었습니다!');
                 handleCloseOrBack();
             } else alert('복원에 실패했습니다.');
@@ -314,9 +313,12 @@ export default function BackupPage({ onClose }: { onClose?: () => void }) {
 
     const handleRollbackToHistoryVersion = async (targetVer: AnalysisVersion) => {
         if (!viewingAlbum) return;
-        const ok = window.confirm(
-            `이 앨범의 현재 분석 내용을 '버전 ${targetVer.version}'의 내용으로 되돌리시겠습니까?`,
-        );
+        const ok =
+            Platform.OS === 'web'
+                ? window.confirm(
+                      `이 앨범의 현재 분석 내용을 '버전 ${targetVer.version}'의 내용으로 되돌리시겠습니까?`,
+                  )
+                : true;
         if (!ok) return;
 
         try {
@@ -358,7 +360,7 @@ export default function BackupPage({ onClose }: { onClose?: () => void }) {
         if (e && e.stopPropagation) e.stopPropagation();
         if (!viewingAlbum) return;
 
-        const ok = window.confirm(`버전 ${versionNum} 기록을 영구 삭제하시겠습니까?`);
+        const ok = Platform.OS === 'web' ? window.confirm(`버전 ${versionNum} 기록을 영구 삭제하시겠습니까?`) : true;
         if (!ok) return;
 
         try {
@@ -401,7 +403,7 @@ export default function BackupPage({ onClose }: { onClose?: () => void }) {
 
             if (res.ok) {
                 const data = await res.json();
-                appendActiveMemories(data.restoredItems);
+                appendActiveMemories(resolveBackendMediaUrls(data.restoredItems));
                 alert(`✨ 선택한 ${data.restoredItems.length}개의 앨범이 복원되었습니다!`);
                 setSelectedAlbumIds(new Set());
                 handleCloseOrBack();
@@ -596,16 +598,22 @@ export default function BackupPage({ onClose }: { onClose?: () => void }) {
     return (
         <View style={styles.pageContainer}>
             <MemoryAppHeader />
-            <View style={[styles.modalCard, isNarrow && styles.modalCardNarrow]}>
+            <ScrollView
+                style={styles.pageScroll}
+                contentContainerStyle={[styles.modalCard, isNarrow && styles.modalCardNarrow]}
+            >
                 {/* 상단 헤더 */}
                 <View style={styles.headerRow}>
                     <MemoryPageHeader
                         title="기억과 추억 보관함"
                         subtitle="노트가 되기 전의 기억 자료와 완성된 추억 노트를 나누어 관리하세요."
+                        compact={mobile}
                     />
-                    <TouchableOpacity style={styles.backToHomeBtn} onPress={handleCloseOrBack}>
-                        <Text style={styles.backToHomeBtnText}>추억 수집으로</Text>
-                    </TouchableOpacity>
+                    {!mobile ? (
+                        <TouchableOpacity style={styles.backToHomeBtn} onPress={handleCloseOrBack}>
+                            <Text style={styles.backToHomeBtnText}>추억 수집으로</Text>
+                        </TouchableOpacity>
+                    ) : null}
                 </View>
 
                 <View style={styles.storageTypeTabs}>
@@ -1340,7 +1348,7 @@ export default function BackupPage({ onClose }: { onClose?: () => void }) {
                         </View>
                     </View>
                 </Modal>
-            </View>
+            </ScrollView>
         </View>
     );
 }
@@ -1350,8 +1358,9 @@ const styles = StyleSheet.create({
         flex: 1,
         backgroundColor: memoryColors.canvas,
     },
+    pageScroll: { flex: 1 },
     modalCard: {
-        flex: 1,
+        flexGrow: 1,
         width: '100%',
         maxWidth: 1440,
         alignSelf: 'center',
@@ -1991,3 +2000,4 @@ const styles = StyleSheet.create({
     },
     closeFooterBtnText: { fontSize: 13, fontWeight: '700', color: '#475569' },
 });
+
